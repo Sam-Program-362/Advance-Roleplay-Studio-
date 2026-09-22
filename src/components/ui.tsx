@@ -125,7 +125,7 @@ export function Field({
 }
 
 export const inputCls =
-  "w-full rounded-lg bg-slate-900/70 border border-white/10 px-3 py-2 text-sm text-slate-100 placeholder-slate-600 outline-none focus:border-violet-500/70 focus:ring-2 focus:ring-violet-500/20 transition";
+  "w-full rounded-xl bg-[#111528] border border-white/10 px-3.5 py-2.5 text-sm text-slate-100 placeholder-slate-500 outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20 transition duration-200 shadow-inner";
 
 export function TextInput(props: {
   value: string;
@@ -240,27 +240,27 @@ export function Modal({
   }, [open, onClose]);
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
-      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 animate-fade-in">
+      <div className="absolute inset-0 bg-black/75 backdrop-blur-md transition-opacity" onClick={onClose} />
       <div
         className={cx(
-          "relative w-full overflow-hidden rounded-t-2xl sm:rounded-2xl border border-white/10 bg-slate-900 shadow-2xl flex flex-col",
+          "relative w-full overflow-hidden rounded-t-3xl sm:rounded-3xl border border-white/15 bg-[#111528] shadow-2xl flex flex-col animate-scale-in",
           wide ? "sm:max-w-4xl" : "sm:max-w-lg",
           "max-h-[92dvh] sm:max-h-[88dvh]",
         )}
       >
-        <div className="flex items-center justify-between gap-3 border-b border-white/10 px-4 py-3 shrink-0">
-          <h3 className="text-sm font-semibold text-white truncate">{title}</h3>
+        <div className="flex items-center justify-between gap-3 border-b border-white/10 px-5 py-3.5 shrink-0 bg-[#0d1120]">
+          <h3 className="text-sm font-bold text-white truncate">{title}</h3>
           <button
             onClick={onClose}
-            className="rounded-md px-2 py-1 text-slate-400 hover:bg-white/10 hover:text-white"
+            className="rounded-full px-2 py-1 text-slate-400 hover:bg-white/10 hover:text-white transition"
           >
             ✕
           </button>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">{children}</div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">{children}</div>
         {footer && (
-          <div className="shrink-0 border-t border-white/10 px-4 py-3 flex justify-end gap-2 bg-slate-900">
+          <div className="shrink-0 border-t border-white/10 px-5 py-3.5 flex justify-end gap-2 bg-[#0d1120]">
             {footer}
           </div>
         )}

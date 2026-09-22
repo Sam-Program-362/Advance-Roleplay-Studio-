@@ -13,8 +13,10 @@ import { errorJson } from "@/lib/server";
 import {
   BOOK_SPEC,
   CHAR_SPEC,
+  CHAT_SPEC,
   SPEC_VERSION,
   type CharacterBundle,
+  type ChatBundle,
   type LorebookBundle,
   type PortableBook,
   type PortableChat,
@@ -78,6 +80,51 @@ export async function GET(req: Request) {
         lorebook: book,
       };
       return download(`${slug(book.name)}.lorebook.json`, bundle);
+    }
+
+    /* ── Single chat session (also re-importable) ─────────────────── */
+    if (type === "chat") {
+      const c = (await db.select().from(chats).where(eq(chats.id, id)).limit(1))[0];
+      if (!c) return errorJson(new Error("Session not found"), 404);
+      const owner = c.characterId
+        ? ((await db
+            .select()
+            .from(characters)
+            .where(eq(characters.id, c.characterId))
+            .limit(1))[0] ?? null)
+        : null;
+      const msgs = await db
+        .select()
+        .from(messages)
+        .where(eq(messages.chatId, c.id))
+        .orderBy(asc(messages.id));
+      const cps = await db.select().from(checkpoints).where(eq(checkpoints.chatId, c.id));
+      const indexById = new Map(msgs.map((m, i) => [m.id, i]));
+      const bundle: ChatBundle = {
+        spec: CHAT_SPEC,
+        spec_version: SPEC_VERSION,
+        exportedAt: new Date().toISOString(),
+        characterName: owner?.name ?? "",
+        characterId: c.characterId,
+        chat: {
+          title: c.title,
+          mode: c.mode,
+          summary: c.summary,
+          summaryInstructions: c.summaryInstructions,
+          messages: msgs.map((m) => ({
+            role: m.role,
+            content: m.content,
+            createdAt: m.createdAt?.toISOString(),
+          })),
+          checkpoints: cps
+            .filter((cp) => indexById.has(cp.messageId))
+            .map((cp) => ({ name: cp.name, messageIndex: indexById.get(cp.messageId) ?? 0 })),
+        },
+      };
+      return download(
+        `${slug(owner?.name ?? "assistant")}-${slug(c.title)}.session.json`,
+        bundle,
+      );
     }
 
     const c = (await db.select().from(characters).where(eq(characters.id, id)).limit(1))[0];

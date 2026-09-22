@@ -146,7 +146,7 @@ export default function LorebookPanel({
           ⬆ Import
           <input
             type="file"
-            accept="application/json,.json"
+            accept=".json,.txt,.jsonc,application/json,text/plain,application/octet-stream"
             className="hidden"
             onChange={(e) => {
               const f = e.target.files?.[0];

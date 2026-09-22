@@ -1,15 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type {
-  AppSettings,
-  Character,
-  ChatMessage,
-  Checkpoint,
-  FullChat,
-} from "@/lib/client";
+import type { AppSettings, Character, ChatMessage, Checkpoint, FullChat } from "@/lib/client";
 import { api, generate } from "@/lib/client";
-import { AutoTextarea, Avatar, Button, Field, Modal, cx } from "./ui";
+import { AutoTextarea, Avatar, Button, Field, ImageUpload, Modal, Slider, cx } from "./ui";
 
 /* ---------- roleplay prose renderer ---------- */
 function renderContent(text: string) {
@@ -53,6 +47,7 @@ export default function ChatView({
   character,
   settings,
   onReload,
+  onPatchCharacter,
   onOpenSessions,
   toast,
   headerLeft,
@@ -61,6 +56,7 @@ export default function ChatView({
   character: Character | null;
   settings: AppSettings;
   onReload: () => Promise<void>;
+  onPatchCharacter?: (id: number, patch: Partial<Character>) => Promise<void>;
   onOpenSessions: () => void;
   toast: (m: string, k?: "ok" | "err") => void;
   headerLeft?: React.ReactNode;
@@ -76,6 +72,14 @@ export default function ChatView({
   const [summaryDraft, setSummaryDraft] = useState(chat.summary);
   const [summaryInstr, setSummaryInstr] = useState(chat.summaryInstructions);
   const [stats, setStats] = useState<Record<string, unknown> | null>(null);
+
+  /* chat background (unique to this character) */
+  const [bgOpen, setBgOpen] = useState(false);
+  const [bgDraft, setBgDraft] = useState("");
+  const [bgBlur, setBgBlur] = useState(6);
+  const [bgOpacity, setBgOpacity] = useState(35);
+  const [bgBusy, setBgBusy] = useState(false);
+
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -84,6 +88,13 @@ export default function ChatView({
     setSummaryDraft(chat.summary);
     setSummaryInstr(chat.summaryInstructions);
   }, [chat.id, chat.summary, chat.summaryInstructions]);
+
+  useEffect(() => {
+    if (!character) return;
+    setBgDraft(character.background ?? "");
+    setBgBlur(character.backgroundBlur ?? 6);
+    setBgOpacity(character.backgroundOpacity ?? 35);
+  }, [character?.id, character?.background, character?.backgroundBlur, character?.backgroundOpacity]);
 
   const scrollToBottom = useCallback((smooth = true) => {
     bottomRef.current?.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "end" });
@@ -236,6 +247,24 @@ export default function ChatView({
     }
   }
 
+  async function applyBackground() {
+    if (!character || !onPatchCharacter) return;
+    setBgBusy(true);
+    try {
+      await onPatchCharacter(character.id, {
+        background: bgDraft,
+        backgroundBlur: bgBlur,
+        backgroundOpacity: bgOpacity,
+      });
+      setBgOpen(false);
+      toast("Background updated");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not save background", "err");
+    } finally {
+      setBgBusy(false);
+    }
+  }
+
   const bg = character?.background;
   const blur = character?.backgroundBlur ?? 6;
   const opacity = (character?.backgroundOpacity ?? 35) / 100;
@@ -246,28 +275,51 @@ export default function ChatView({
         <div className="pointer-events-none absolute inset-0 z-0">
           <div
             className="absolute inset-0 bg-cover bg-center"
-            style={{ backgroundImage: `url(${bg})`, filter: `blur(${blur}px)`, opacity, transform: "scale(1.08)" }}
+            style={{
+              backgroundImage: `url(${bg})`,
+              filter: `blur(${blur}px)`,
+              opacity,
+              transform: "scale(1.08)",
+            }}
           />
           <div className="absolute inset-0 bg-gradient-to-b from-slate-950/80 via-slate-950/50 to-slate-950/85" />
         </div>
       )}
 
       {/* Header */}
-      <header className="relative z-10 flex shrink-0 items-center gap-2 border-b border-white/10 bg-slate-950/70 px-3 py-2 backdrop-blur">
+      <header className="relative z-10 flex shrink-0 items-center gap-2.5 border-b border-white/10 bg-[#0d1120]/80 px-4 py-2.5 backdrop-blur-md">
         {headerLeft}
-        <Avatar src={character?.avatar} name={character?.name ?? "Assistant"} size={34} />
+        <Avatar src={character?.avatar} name={character?.name ?? "Assistant"} size={36} />
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-semibold text-white">
+          <p className="truncate text-sm font-bold text-white">
             {character?.name ?? "Assistant"}
           </p>
           <button
             onClick={onOpenSessions}
-            className="block max-w-full truncate text-[11px] text-slate-400 hover:text-violet-300"
+            className="flex items-center gap-1 max-w-full truncate text-[11px] font-medium text-slate-400 hover:text-violet-300 transition"
           >
-            {chat.title} · switch session ▾
+            <span className="truncate">{chat.title}</span>
+            <span className="text-[9px]">▾</span>
           </button>
         </div>
-        <Button size="xs" variant="soft" onClick={() => setMemoryOpen(true)} title="Story memory">
+
+        {character && onPatchCharacter && (
+          <button
+            onClick={() => setBgOpen(true)}
+            title="Chat background for this character"
+            className="grid h-8 w-8 shrink-0 place-items-center rounded-full border border-white/10 bg-[#14192d] text-slate-300 transition hover:bg-white/15 hover:text-white active:scale-95"
+          >
+            🖼
+          </button>
+        )}
+        <a
+          href={`/api/export?type=chat&id=${chat.id}`}
+          title="Export this session as JSON"
+          className="grid h-8 w-8 shrink-0 place-items-center rounded-full border border-white/10 bg-[#14192d] text-slate-300 transition hover:bg-white/15 hover:text-white active:scale-95"
+        >
+          ⬇
+        </a>
+        <Button size="xs" variant="soft" className="rounded-full" onClick={() => setMemoryOpen(true)} title="Story memory">
           🧠<span className="hidden sm:inline ml-1">Memory</span>
         </Button>
       </header>
@@ -307,13 +359,13 @@ export default function ChatView({
             const cp = cpByMessage.get(m.id);
             const showStream = streaming && isLast && streamMode !== "insert";
             return (
-              <div key={m.id} className={cx("group flex gap-2.5", isUser && "flex-row-reverse")}>
+              <div key={m.id} className={cx("group flex gap-2.5 animate-fade-in", isUser && "flex-row-reverse")}>
                 {!isUser && <Avatar src={character?.avatar} name={character?.name ?? "AI"} size={32} />}
                 <div className={cx("min-w-0 max-w-[88%] sm:max-w-[80%]", isUser && "items-end")}>
                   {cp && (
                     <button
                       onClick={() => void restore(cp)}
-                      className="mb-1 inline-flex items-center gap-1 rounded-full border border-amber-400/40 bg-amber-500/15 px-2 py-0.5 text-[10px] text-amber-200 hover:bg-amber-500/30"
+                      className="mb-1 inline-flex items-center gap-1 rounded-full border border-amber-400/40 bg-amber-500/15 px-2.5 py-0.5 text-[10px] text-amber-200 hover:bg-amber-500/30 transition"
                       title="Revert the conversation to this point"
                     >
                       🔖 {cp.name} · revert
@@ -321,10 +373,10 @@ export default function ChatView({
                   )}
                   <div
                     className={cx(
-                      "rounded-2xl border px-3.5 py-2.5 text-[15px] shadow-sm space-y-3",
+                      "rounded-2xl sm:rounded-3xl border px-4 py-3 text-[14.5px] leading-relaxed shadow-md space-y-3 transition-all",
                       isUser
-                        ? "border-violet-400/25 bg-violet-600/25 text-slate-50"
-                        : "border-white/10 bg-slate-900/80 text-slate-200 backdrop-blur-sm",
+                        ? "border-violet-500/30 bg-gradient-to-br from-violet-600/30 to-indigo-600/20 text-slate-50"
+                        : "border-white/10 bg-[#121627]/90 text-slate-200 backdrop-blur-md shadow-lg shadow-black/20",
                     )}
                   >
                     {renderContent(
@@ -380,11 +432,12 @@ export default function ChatView({
       </div>
 
       {/* Action bar */}
-      <div className="relative z-10 shrink-0 border-t border-white/10 bg-slate-950/80 px-2 py-1.5 backdrop-blur">
+      <div className="relative z-10 shrink-0 border-t border-white/10 bg-[#0c1020]/85 px-3 py-2 backdrop-blur-md">
         <div className="mx-auto flex w-full max-w-3xl flex-wrap items-center gap-1.5 overflow-x-auto no-scrollbar">
           <Button
             size="xs"
             variant="soft"
+            className="rounded-full"
             disabled={streaming || !canExtend}
             onClick={() => void run("regenerate")}
             title="Re-roll the last AI message"
@@ -394,6 +447,7 @@ export default function ChatView({
           <Button
             size="xs"
             variant="soft"
+            className="rounded-full"
             disabled={streaming || !canExtend}
             onClick={() => void run("continue")}
             title="Seamlessly continue the last message from where it stopped"
@@ -403,18 +457,20 @@ export default function ChatView({
           <Button
             size="xs"
             variant="accent"
+            className="rounded-full"
             disabled={streaming || !canExtend}
             onClick={() => void run("elaborate")}
             title="Expand and deepen the current scene without advancing past it"
           >
             ✨ Elaborate
           </Button>
-          <Button size="xs" variant="soft" disabled={streaming} onClick={() => void impersonate()}>
+          <Button size="xs" variant="soft" className="rounded-full" disabled={streaming} onClick={() => void impersonate()}>
             🎭 Impersonate
           </Button>
           <Button
             size="xs"
             variant="soft"
+            className="rounded-full"
             disabled={summaryBusy || !hasMessages}
             onClick={() => setMemoryOpen(true)}
           >
@@ -424,6 +480,7 @@ export default function ChatView({
             <Button
               size="xs"
               variant="danger"
+              className="rounded-full"
               onClick={() => {
                 abortRef.current?.abort();
                 setStreaming(false);
@@ -436,8 +493,8 @@ export default function ChatView({
       </div>
 
       {/* Composer — always rendered */}
-      <div className="relative z-10 shrink-0 border-t border-white/10 bg-slate-950/90 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 backdrop-blur">
-        <div className="mx-auto flex w-full max-w-3xl items-end gap-2">
+      <div className="relative z-10 shrink-0 border-t border-white/10 bg-[#0c1020]/95 px-3 pb-[max(0.6rem,env(safe-area-inset-bottom))] pt-2.5 backdrop-blur-md">
+        <div className="mx-auto flex w-full max-w-3xl items-end gap-2.5">
           <div className="min-w-0 flex-1">
             <AutoTextarea
               value={input}
@@ -453,7 +510,7 @@ export default function ChatView({
                   void send();
                 }
               }}
-              className="bg-slate-900/90"
+              className="bg-[#121627] border-white/15 focus:border-violet-500 rounded-2xl shadow-inner text-sm"
             />
           </div>
           <button
@@ -461,10 +518,10 @@ export default function ChatView({
             onClick={() => void send()}
             disabled={streaming || !input.trim()}
             className={cx(
-              "grid h-[42px] w-[42px] shrink-0 place-items-center rounded-xl text-lg transition",
+              "grid h-[44px] w-[44px] shrink-0 place-items-center rounded-2xl text-lg transition-all duration-200 active:scale-95 shadow-md",
               streaming || !input.trim()
-                ? "bg-slate-800 text-slate-600"
-                : "bg-gradient-to-br from-violet-600 to-fuchsia-600 text-white shadow-lg shadow-violet-900/40 hover:from-violet-500 active:scale-95",
+                ? "bg-slate-800/80 text-slate-600"
+                : "bg-gradient-to-tr from-violet-600 to-indigo-500 text-white shadow-violet-600/40 hover:from-violet-500 hover:to-indigo-400 hover:scale-102",
             )}
             title="Send (Enter)"
           >
@@ -490,6 +547,87 @@ export default function ChatView({
         }
       >
         <AutoTextarea value={editText} onChange={setEditText} minRows={10} maxRows={26} />
+      </Modal>
+
+      {/* Background modal */}
+      <Modal
+        open={bgOpen}
+        onClose={() => setBgOpen(false)}
+        title={`🖼 Chat background — ${character?.name ?? ""}`}
+        wide
+        footer={
+          <>
+            <Button
+              variant="danger"
+              onClick={() => {
+                setBgDraft("");
+                setBgBlur(6);
+                setBgOpacity(35);
+              }}
+              disabled={!bgDraft && bgBlur === 6 && bgOpacity === 35}
+            >
+              Restore default
+            </Button>
+            <Button variant="ghost" onClick={() => setBgOpen(false)}>
+              Cancel
+            </Button>
+            <Button variant="primary" disabled={bgBusy} onClick={() => void applyBackground()}>
+              {bgBusy ? "Saving…" : "Apply"}
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <p className="text-[11px] leading-relaxed text-slate-500">
+            This background is saved on <span className="text-slate-300">{character?.name}</span>{" "}
+            only — every character you chat with keeps its own image, blur and visibility. The
+            preview is live behind this window.
+          </p>
+          <ImageUpload
+            label="Background image"
+            value={bgDraft}
+            onChange={setBgDraft}
+            maxSize={1400}
+            aspect="aspect-video"
+          />
+          <Slider
+            label="Blur density"
+            value={bgBlur}
+            min={0}
+            max={24}
+            onChange={setBgBlur}
+            suffix="px"
+          />
+          <Slider
+            label="Background visibility"
+            value={bgOpacity}
+            min={0}
+            max={100}
+            onChange={setBgOpacity}
+            suffix="%"
+          />
+          <Field label="Quick presets" hint="Adjust the sliders and hit Apply.">
+            <div className="flex flex-wrap gap-1.5">
+              {[
+                { label: "Crisp", blur: 0, opacity: 55 },
+                { label: "Soft", blur: 6, opacity: 35 },
+                { label: "Hazy", blur: 12, opacity: 22 },
+                { label: "Dark", blur: 3, opacity: 15 },
+              ].map((p) => (
+                <button
+                  key={p.label}
+                  onClick={() => {
+                    setBgBlur(p.blur);
+                    setBgOpacity(p.opacity);
+                  }}
+                  className="rounded-full border border-white/15 px-3 py-1 text-[11px] text-slate-300 hover:border-violet-400/60 hover:text-white"
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </Field>
+        </div>
       </Modal>
 
       {/* Memory modal */}

@@ -211,9 +211,23 @@ export const api = {
     context?: Record<string, unknown>;
   }) => req<{ text: string }>("/api/writer", { method: "POST", body: JSON.stringify(body) }),
 
-  importJson: (payload: unknown, kind: "auto" | "character" | "lorebook" = "auto") =>
-    req<{ ok: boolean; kind: string; characterId?: number; lorebookId?: number; name?: string }>(
-      `/api/import?kind=${kind}`,
+  importJson: (
+    payload: unknown,
+    kind: "auto" | "character" | "lorebook" | "chat" = "auto",
+    characterId?: number | null,
+  ) =>
+    req<{
+      ok: boolean;
+      kind: string;
+      characterId?: number;
+      chatId?: number;
+      lorebookId?: number;
+      name?: string;
+      messages?: number;
+      lorebooks?: number;
+      chats?: number;
+    }>(
+      `/api/import?kind=${kind}${characterId ? `&characterId=${characterId}` : ""}`,
       { method: "POST", body: JSON.stringify(payload) },
     ),
 };
@@ -329,15 +343,47 @@ export function downloadJson(filename: string, data: unknown) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+/**
+ * Tolerant JSON reader: strips a UTF-8 BOM, ignores trailing/leading junk and
+ * falls back to the outermost object or array, so files exported by other
+ * Roleplay platforms (SillyTavern, Janitor, Chub, Agnai…) still load.
+ */
+export function parseJsonLoose(text: string): unknown {
+  const t = text.replace(/^\uFEFF/, "").replace(/^\s+|\s+$/g, "");
+  if (!t) throw new Error("the file is empty");
+  try {
+    return JSON.parse(t);
+  } catch {
+    /* try to recover below */
+  }
+  const attempts: string[] = [];
+  const a = t.indexOf("{");
+  const b = t.lastIndexOf("}");
+  if (a >= 0 && b > a) attempts.push(t.slice(a, b + 1));
+  const c = t.indexOf("[");
+  const d = t.lastIndexOf("]");
+  if (c >= 0 && d > c) attempts.push(t.slice(c, d + 1));
+  for (const s of attempts) {
+    try {
+      return JSON.parse(s);
+    } catch {
+      /* next attempt */
+    }
+  }
+  throw new Error("the file is not valid JSON");
+}
+
 export function readJsonFile(file: File): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onerror = () => reject(new Error("Could not read file"));
+    reader.onerror = () => reject(new Error(`Could not read "${file.name}"`));
     reader.onload = () => {
       try {
-        resolve(JSON.parse(String(reader.result)));
-      } catch {
-        reject(new Error("File is not valid JSON"));
+        resolve(parseJsonLoose(String(reader.result ?? "")));
+      } catch (e) {
+        reject(
+          new Error(`"${file.name}" — ${e instanceof Error ? e.message : "not valid JSON"}`),
+        );
       }
     };
     reader.readAsText(file);
