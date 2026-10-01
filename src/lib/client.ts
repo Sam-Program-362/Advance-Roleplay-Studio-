@@ -27,6 +27,9 @@ export type AppSettings = {
   nsfwPrompt: string;
   personaName: string;
   personaDescription: string;
+  imageConnectionId: number | null;
+  imageModel: string;
+  imageAspect: string;
   summaryInstructions: string;
   autoSummarize: boolean;
   autoSummarizeEvery: number;
@@ -93,6 +96,14 @@ export type ChatSession = {
 
 export type ChatMessage = { id: number; chatId: number; role: string; content: string };
 export type Checkpoint = { id: number; chatId: number; messageId: number; name: string };
+
+export type Persona = {
+  id: number;
+  name: string;
+  description: string;
+  avatar: string;
+  createdAt: string;
+};
 
 export type FullChat = ChatSession & { messages: ChatMessage[]; checkpoints: Checkpoint[] };
 
@@ -201,6 +212,19 @@ export const api = {
     req<{ summary: string }>("/api/summarize", {
       method: "POST",
       body: JSON.stringify({ chatId, instructions, fromScratch }),
+    }),
+
+  personas: () => req<Persona[]>("/api/personas"),
+  addPersona: (body: { name: string; description?: string; avatar?: string }) =>
+    req<Persona>("/api/personas", { method: "POST", body: JSON.stringify(body) }),
+  savePersona: (id: number, patch: Partial<{ name: string; description: string; avatar: string }>) =>
+    req<Persona>(`/api/personas/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  deletePersona: (id: number) => req<{ ok: true }>(`/api/personas/${id}`, { method: "DELETE" }),
+
+  image: (chatId: number) =>
+    req<{ image: string; model: string }>("/api/image", {
+      method: "POST",
+      body: JSON.stringify({ chatId }),
     }),
 
   writer: (body: {

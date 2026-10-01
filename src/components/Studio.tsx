@@ -518,6 +518,7 @@ export default function Studio() {
               settings={settings}
               onReload={reloadChat}
               onPatchCharacter={patchCharacter}
+              onPatchSettings={patchSettings}
               onOpenSessions={() => setSessionsOpen(true)}
               toast={toast}
               headerLeft={

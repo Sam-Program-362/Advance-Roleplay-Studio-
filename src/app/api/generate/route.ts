@@ -102,7 +102,8 @@ export async function POST(req: Request) {
       if (!last || last.role !== "assistant") {
         return errorJson(new Error("Nothing to elaborate on yet."), 400);
       }
-      appendToMessageId = last.id;
+      // Elaborate writes a BRAND-NEW reply that deepens the previous one —
+      // it never appends into (or rewrites) the message it is elaborating on.
     }
 
     // Lorebook scan over the recent window
@@ -130,6 +131,10 @@ export async function POST(req: Request) {
             ? IMPERSONATE_INSTRUCTION
             : undefined;
 
+    // Continue ends on the assistant's own partial message (a prefill), but
+    // elaborate/impersonate are fresh directives — they go in as a new user
+    // turn so every provider reliably answers instead of "continuing".
+
     const built = buildPrompt({
       mode,
       character,
@@ -146,6 +151,7 @@ export async function POST(req: Request) {
       contextSize: conn.contextSize,
       maxTokens: conn.maxTokens,
       taskInstruction,
+      taskInstructionRole: action === "continue" ? "system" : "user",
       continuationSeed,
     });
 
@@ -153,12 +159,33 @@ export async function POST(req: Request) {
 
     // Impersonate returns text without persisting anything.
     if (action === "impersonate") {
-      const text = await completeOnce(cfg, built.messages);
-      return Response.json({ ok: true, text: text.trim() });
+      const raw = (await completeOnce(cfg, built.messages)).trim();
+      const text = cleanup(raw, character?.name ?? "", s.personaName);
+      if (!text) {
+        return errorJson(
+          new Error(
+            "The model returned an empty response. Try again, or pick a different model in Settings → Connections.",
+          ),
+          502,
+        );
+      }
+      return Response.json({ ok: true, text });
     }
 
     if (!s.streaming) {
-      const text = (await completeOnce(cfg, built.messages)).trim();
+      const text = cleanup(
+        (await completeOnce(cfg, built.messages)).trim(),
+        character?.name ?? "",
+        s.personaName,
+      );
+      if (!text) {
+        return errorJson(
+          new Error(
+            "The model returned an empty response. Try again, or pick a different model in Settings → Connections.",
+          ),
+          502,
+        );
+      }
       const finalText = await persist({
         chatId: chat.id,
         text,
@@ -177,6 +204,11 @@ export async function POST(req: Request) {
         send("delta", { text: chunk });
       }
       acc = cleanup(acc, character?.name ?? "", s.personaName);
+      if (!acc.trim()) {
+        throw new Error(
+          "The model returned an empty response. Try again, or pick a different model in Settings → Connections.",
+        );
+      }
       const saved = await persist({
         chatId: chat.id,
         text: acc,
@@ -194,8 +226,9 @@ export async function POST(req: Request) {
 /** Strip leaked role labels / OOC artefacts that break immersion. */
 function cleanup(text: string, charName: string, userName: string): string {
   let t = text.replace(/^\s+/, "");
-  if (charName) {
-    const re = new RegExp(`^${escapeRe(charName)}\\s*:\\s*`, "i");
+  for (const n of [charName, userName]) {
+    if (!n) continue;
+    const re = new RegExp(`^${escapeRe(n)}\\s*:\\s*`, "i");
     t = t.replace(re, "");
   }
   if (userName) {
