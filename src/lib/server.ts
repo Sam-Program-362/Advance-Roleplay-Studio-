@@ -84,6 +84,7 @@ export function toLlmConfig(c: {
   topP: number;
   frequencyPenalty: number;
   presencePenalty: number;
+  contextSize: number;
   extraHeaders: Record<string, string> | null;
 }): LlmConfig {
   return {
@@ -96,6 +97,7 @@ export function toLlmConfig(c: {
     topP: c.topP,
     frequencyPenalty: c.frequencyPenalty,
     presencePenalty: c.presencePenalty,
+    contextSize: c.contextSize,
     extraHeaders: c.extraHeaders,
   };
 }

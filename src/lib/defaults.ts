@@ -262,6 +262,13 @@ export const PROVIDERS = [
     models: [],
   },
   {
+    id: "horde",
+    label: "AI Horde (free, community)",
+    baseUrl: "https://aihorde.net/api/v2",
+    kind: "horde",
+    models: [],
+  },
+  {
     id: "custom",
     label: "Custom (OpenAI-compatible)",
     baseUrl: "",
@@ -270,11 +277,18 @@ export const PROVIDERS = [
   },
 ] as const;
 
+/**
+ * Reserved key used to stash the AI Horde "trusted workers only" toggle inside a
+ * connection's existing `extra_headers` JSON column. Keys beginning with `__` are
+ * app config, never sent as real HTTP headers (no DB migration required).
+ */
+export const HORDE_TRUSTED_KEY = "__hordeTrustedWorkers";
+
 export type ProviderId = (typeof PROVIDERS)[number]["id"];
 
-export function providerKind(id: string): "openai" | "anthropic" | "google" {
+export function providerKind(id: string): "openai" | "anthropic" | "google" | "horde" {
   const p = PROVIDERS.find((x) => x.id === id);
-  return (p?.kind as "openai" | "anthropic" | "google") ?? "openai";
+  return (p?.kind as "openai" | "anthropic" | "google" | "horde") ?? "openai";
 }
 
 export function providerBaseUrl(id: string): string {

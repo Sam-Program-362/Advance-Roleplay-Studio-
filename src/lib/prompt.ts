@@ -68,8 +68,17 @@ export function scanLorebook(
   return selected;
 }
 
+export type GenerateAction =
+  | "send"
+  | "regenerate"
+  | "continue"
+  | "elaborate"
+  | "impersonate";
+
 export type BuildArgs = {
   mode: "assistant" | "roleplay";
+  /** Which generate action triggered this prompt (used by the Horde builder). */
+  action?: GenerateAction;
   character: Character | null;
   personaName: string;
   personaDescription: string;
@@ -106,6 +115,8 @@ export type BuiltPrompt = {
     totalTokens: number;
     activeLore: string[];
   };
+  /** Horde only — the stop sequence that ends the completion. */
+  stopSequence?: string;
 };
 
 export function buildPrompt(args: BuildArgs): BuiltPrompt {
@@ -243,6 +254,128 @@ You are writing a BRAND-NEW message that re-enters the scene from your previous 
 - Match the existing prose formatting exactly: *asterisks* for narration/action, "quotes" for speech.
 - Write 2–4 new paragraphs that read as a natural companion piece to your previous message, then stop on a beat that invites {{user}} to respond.
 - Output ONLY the new prose — no preamble, no recap, no heading, no quotation of prior text.`;
+
+/* ------------------------------------------------------------------ */
+/* AI Horde — plain-text completion prompt (Horde connections only)    */
+/* ------------------------------------------------------------------ */
+
+/** Horde has no chat roles, so a single bracketed note carries the task. */
+export const HORDE_CONTINUE_NOTE =
+  "[The character's last message above was cut off mid-reply. Continue it seamlessly from the exact point where it stopped — do not repeat, restart or summarise anything already written.]";
+
+export const HORDE_ELABORATE_NOTE =
+  "[Rewrite the character's last message above as a longer, richer version of the very same moment — add sensory detail, body language and interior thought, but do not advance the scene or contradict anything already written.]";
+
+/**
+ * AI Horde skips the roleplay/assistant system prompt entirely, so its prose
+ * prompt is built from plain labelled sections plus raw chat history. It is not
+ * a chat model: the response is a continuation of one flat string.
+ */
+export function buildHordePrompt(args: BuildArgs): BuiltPrompt {
+  const charName = args.character?.name?.trim() || "Assistant";
+  const userName = args.personaName?.trim() || "User";
+  const ctx: MacroCtx = { char: charName, user: userName };
+  const M = (t: string) => applyMacros(t || "", ctx);
+  const c = args.character;
+
+  // Labelled sections — pinned, never trimmed.
+  const sections: string[] = [];
+  if (c?.contextBlock?.trim()) {
+    sections.push(`Author's direction:\n${M(c.contextBlock)}`);
+  }
+  if (c) {
+    sections.push(
+      `Character: ${charName}\n${M(c.personality?.trim() || "(no details provided)")}`,
+    );
+    if (c.scenario?.trim()) sections.push(`Scenario:\n${M(c.scenario)}`);
+  }
+  if (args.personaDescription?.trim()) {
+    sections.push(`Persona (${userName}):\n${M(args.personaDescription)}`);
+  }
+  if (c?.exampleDialogue?.trim()) {
+    sections.push(`Example dialogue:\n${M(c.exampleDialogue)}`);
+  }
+  if (args.lorebookEntries.length) {
+    sections.push(
+      `Lorebook:\n` +
+        args.lorebookEntries
+          .map((e) => `[${e.title || "Entry"}]\n${M(e.content)}`)
+          .join("\n\n"),
+    );
+  }
+  if (args.summary?.trim()) {
+    sections.push(`Story memory:\n${M(args.summary)}`);
+  }
+  const header = sections.join("\n\n");
+  const pinnedTokens = estimateTokens(header);
+  const loreTokens = args.lorebookEntries.reduce((s, e) => s + estimateTokens(e.content), 0);
+
+  // Horde caps the context at 8192 tokens; keep room for the reply.
+  const effective = Math.min(args.contextSize || 8192, 8192);
+  const reserve = Math.min(args.maxTokens || 512, 512) + 120;
+  const historyBudget = Math.max(200, effective - pinnedTokens - reserve);
+
+  const action: GenerateAction = args.action ?? "send";
+  const hist = args.history.map((m) => {
+    const speaker = m.role === "assistant" ? charName : userName;
+    return `${speaker}: ${M(m.content)}`;
+  });
+  if (action === "continue" && args.continuationSeed?.trim()) {
+    hist.push(`${charName}: ${M(args.continuationSeed)}`);
+  }
+
+  // Trim the OLDEST history only — sections above are never evicted.
+  const kept: string[] = [];
+  let used = 0;
+  let dropped = 0;
+  for (let i = hist.length - 1; i >= 0; i--) {
+    const cost = estimateTokens(hist[i]) + 4;
+    if (used + cost > historyBudget && kept.length > 0) {
+      dropped = i + 1;
+      break;
+    }
+    kept.unshift(hist[i]);
+    used += cost;
+  }
+
+  const finalSpeaker = action === "impersonate" ? userName : charName;
+  const note =
+    action === "continue"
+      ? HORDE_CONTINUE_NOTE
+      : action === "elaborate"
+        ? HORDE_ELABORATE_NOTE
+        : null;
+
+  const body = [kept.join("\n"), ...(note ? [note] : []), `${finalSpeaker}:`]
+    .filter(Boolean)
+    .join("\n");
+  const prompt = header ? `${header}\n\n${body}` : body;
+
+  return {
+    messages: [{ role: "user", content: prompt }],
+    stats: {
+      pinnedTokens,
+      historyTokens: used,
+      loreTokens,
+      droppedMessages: dropped,
+      totalTokens: pinnedTokens + used,
+      activeLore: args.lorebookEntries.map((e) => e.title),
+    },
+    stopSequence: `\n${userName}:`,
+  };
+}
+
+/**
+ * AI Horde prompt for the simple JSON helpers (summaries, AI Writer): the
+ * existing instruction text flattened into one string that ends in "Response:"
+ * so the completion model knows where to begin.
+ */
+export function buildHordeInstruction(system: string, user: string): string {
+  return [system, user, "Response:"]
+    .map((s) => (s || "").trim())
+    .filter(Boolean)
+    .join("\n\n");
+}
 
 export const IMPERSONATE_INSTRUCTION = `[IMPERSONATION TASK]
 Write the NEXT message from {{user}}'s point of view — you are temporarily writing {{user}}, not {{char}}.

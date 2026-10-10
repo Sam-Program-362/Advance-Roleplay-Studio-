@@ -6,7 +6,13 @@ import {
   toLlmConfig,
 } from "@/lib/server";
 import { completeOnce } from "@/lib/llm";
-import { WRITER_BLOCKS, buildWriterSystemPrompt, type WriterBlock } from "@/lib/defaults";
+import {
+  WRITER_BLOCKS,
+  buildWriterSystemPrompt,
+  providerKind,
+  type WriterBlock,
+} from "@/lib/defaults";
+import { buildHordeInstruction } from "@/lib/prompt";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 180;
@@ -84,7 +90,8 @@ export async function POST(req: Request) {
     const conn = await getActiveConnection(
       body.connectionId ?? s.writerConnectionId ?? s.activeConnectionId,
     );
-    if (!conn || !conn.model) {
+    const isHorde = conn ? providerKind(conn.provider) === "horde" : false;
+    if (!conn || (!conn.model && !isHorde)) {
       return errorJson(
         new Error("No API connection with a model is configured. Open Settings → Connections."),
         400,
@@ -133,16 +140,22 @@ export async function POST(req: Request) {
       `=== OUTPUT ===\nReturn ONLY the raw text for the "${def.label}" field. ${def.shape}`,
     );
 
+    const userText = user.join("\n\n");
+    // Horde is a plain-completion model: one flat instruction string ending in
+    // "Response:" instead of chat roles.
     const raw = await completeOnce(
       {
         ...toLlmConfig(conn),
         temperature: block === "lorebook_keys" || block === "name" ? 0.85 : 0.95,
         maxTokens: block === "lorebook_keys" || block === "name" ? 120 : Math.max(700, conn.maxTokens),
       },
-      [
-        { role: "system", content: system },
-        { role: "user", content: user.join("\n\n") },
-      ],
+      isHorde
+        ? [{ role: "user", content: buildHordeInstruction(system, userText) }]
+        : [
+            { role: "system", content: system },
+            { role: "user", content: userText },
+          ],
+      isHorde ? { signal: req.signal, timeoutMs: (maxDuration - 20) * 1000 } : undefined,
     );
 
     return json({ ok: true, text: sanitize(raw, def.label), block });

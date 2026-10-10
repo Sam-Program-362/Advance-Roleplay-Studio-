@@ -1,9 +1,19 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { AppSettings, Character, ChatMessage, Checkpoint, FullChat } from "@/lib/client";
+import type {
+  AppSettings,
+  Character,
+  ChatMessage,
+  Checkpoint,
+  Connection,
+  FullChat,
+} from "@/lib/client";
 import { api, generate } from "@/lib/client";
+import type { HordeStatus } from "@/lib/llm";
+import { providerKind } from "@/lib/defaults";
 import { AutoTextarea, Avatar, Button, Field, ImageUpload, Modal, Slider, cx } from "./ui";
+import { HordeQueueCard, HordeWaitBar } from "./HordeQueue";
 import PersonaManager from "./PersonaManager";
 
 /* ---------- roleplay prose renderer ---------- */
@@ -47,6 +57,7 @@ export default function ChatView({
   chat,
   character,
   settings,
+  connections,
   onReload,
   onPatchCharacter,
   onPatchSettings,
@@ -57,6 +68,7 @@ export default function ChatView({
   chat: FullChat;
   character: Character | null;
   settings: AppSettings;
+  connections: Connection[];
   onReload: () => Promise<void>;
   onPatchCharacter?: (id: number, patch: Partial<Character>) => Promise<void>;
   onPatchSettings: (patch: Partial<AppSettings>) => void;
@@ -76,6 +88,16 @@ export default function ChatView({
   const [summaryInstr, setSummaryInstr] = useState(chat.summaryInstructions);
   const [stats, setStats] = useState<Record<string, unknown> | null>(null);
 
+  /* AI Horde queue state — Horde connections only */
+  const [horde, setHorde] = useState<HordeStatus | null>(null);
+  const [hordeAt, setHordeAt] = useState(0);
+  const [procStart, setProcStart] = useState<number | null>(null);
+  const [plainWait, setPlainWait] = useState<{ label: string; startedAt: number } | null>(null);
+  /** Wall-clock tick (state, not Date.now() in render) that drives the timers. */
+  const [hordeNow, setHordeNow] = useState(0);
+  /** True only for the streaming generate actions (not impersonate/summaries). */
+  const [generating, setGenerating] = useState(false);
+
   /* persona quick-switcher */
   const [personaOpen, setPersonaOpen] = useState(false);
 
@@ -94,6 +116,7 @@ export default function ChatView({
   const [bgBusy, setBgBusy] = useState(false);
 
   const abortRef = useRef<AbortController | null>(null);
+  const summaryAbortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -131,9 +154,45 @@ export default function ChatView({
   const lastMsg = chat.messages[chat.messages.length - 1];
   const canExtend = lastMsg?.role === "assistant";
 
+  /* AI Horde detection — mirrors the server's getActiveConnection resolution. */
+  const chatConn = useMemo(
+    () => connections.find((c) => c.id === settings.activeConnectionId) ?? connections[0] ?? null,
+    [connections, settings.activeConnectionId],
+  );
+  const chatIsHorde = chatConn ? providerKind(chatConn.provider) === "horde" : false;
+  const writerConn = useMemo(
+    () =>
+      connections.find((c) => c.id === (settings.writerConnectionId ?? settings.activeConnectionId)) ??
+      chatConn,
+    [connections, settings.writerConnectionId, settings.activeConnectionId, chatConn],
+  );
+  const writerIsHorde = writerConn ? providerKind(writerConn.provider) === "horde" : false;
+
+  const hordeActive = streaming && chatIsHorde;
+  useEffect(() => {
+    if (!hordeActive && !plainWait) return;
+    const iv = setInterval(() => setHordeNow(Date.now()), 1000);
+    return () => clearInterval(iv);
+  }, [hordeActive, plainWait]);
+
+  const hordeSince =
+    horde && hordeAt && hordeNow ? Math.max(0, Math.floor((hordeNow - hordeAt) / 1000)) : 0;
+  const hordeQueue = horde ? Math.max(0, horde.queuePosition - hordeSince) : 0;
+  const hordeElapsed = (horde?.elapsedSec ?? 0) + hordeSince;
+  const hordeStage = horde
+    ? horde.processing > 0
+      ? procStart && hordeNow - procStart > 3500
+        ? "Writing"
+        : "A worker picked it up"
+      : "Joined the queue"
+    : "Joining the queue…";
+  const waitElapsed =
+    plainWait && hordeNow ? Math.max(0, Math.floor((hordeNow - plainWait.startedAt) / 1000)) : 0;
+
   async function run(action: "send" | "regenerate" | "continue" | "elaborate", userContent?: string) {
     if (streaming) return;
     setStreaming(true);
+    setGenerating(true);
     setStreamText("");
     setStreamMode(
       action === "continue"
@@ -142,6 +201,9 @@ export default function ChatView({
           ? "replace"
           : "insert",
     );
+    setHorde(null);
+    setHordeAt(0);
+    setProcStart(null);
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     try {
@@ -150,6 +212,13 @@ export default function ChatView({
         {
           onMeta: (m) => setStats(m.stats),
           onDelta: (t) => setStreamText((p) => p + t),
+          onHorde: (s) => {
+            const now = Date.now();
+            setHorde(s);
+            setHordeAt(now);
+            setHordeNow(now);
+            setProcStart((p) => (s.processing > 0 ? p ?? now : null));
+          },
           onDone: async () => {
             setStreamText("");
             setStreaming(false);
@@ -172,6 +241,9 @@ export default function ChatView({
       await onReload();
     } finally {
       setStreaming(false);
+      setGenerating(false);
+      setHorde(null);
+      setProcStart(null);
       abortRef.current = null;
     }
   }
@@ -200,11 +272,15 @@ export default function ChatView({
   async function impersonate() {
     if (streaming) return;
     setStreaming(true);
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    if (chatIsHorde) setPlainWait({ label: "Waiting for AI Horde…", startedAt: Date.now() });
     try {
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ chatId: chat.id, action: "impersonate" }),
+        signal: ctrl.signal,
       });
       const j = (await res.json()) as { text?: string; error?: string };
       if (j.error) throw new Error(j.error);
@@ -217,9 +293,13 @@ export default function ChatView({
       setInput(text);
       toast("Impersonated reply placed in your composer");
     } catch (e) {
-      toast(e instanceof Error ? e.message : "Impersonate failed", "err");
+      if ((e as Error).name !== "AbortError") {
+        toast(e instanceof Error ? e.message : "Impersonate failed", "err");
+      }
     } finally {
       setStreaming(false);
+      setPlainWait(null);
+      abortRef.current = null;
     }
   }
 
@@ -298,17 +378,35 @@ export default function ChatView({
 
   async function doSummarize(fromScratch: boolean) {
     setSummaryBusy(true);
+    const ctrl = new AbortController();
+    summaryAbortRef.current = ctrl;
+    if (writerIsHorde) setPlainWait({ label: "Waiting for AI Horde…", startedAt: Date.now() });
     try {
       await api.saveChat(chat.id, { summaryInstructions: summaryInstr });
-      const res = await api.summarize(chat.id, summaryInstr || undefined, fromScratch);
+      const res = await api.summarize(chat.id, summaryInstr || undefined, fromScratch, ctrl.signal);
       setSummaryDraft(res.summary);
       await onReload();
       toast("Story memory updated");
     } catch (e) {
-      toast(e instanceof Error ? e.message : "Summarise failed", "err");
+      if ((e as Error).name !== "AbortError") {
+        toast(e instanceof Error ? e.message : "Summarise failed", "err");
+      }
     } finally {
       setSummaryBusy(false);
+      setPlainWait(null);
+      summaryAbortRef.current = null;
     }
+  }
+
+  /** Stop whichever AI Horde job is currently running. */
+  function stopHorde() {
+    abortRef.current?.abort();
+    summaryAbortRef.current?.abort();
+    setStreaming(false);
+    setGenerating(false);
+    setSummaryBusy(false);
+    setHorde(null);
+    setPlainWait(null);
   }
 
   async function applyBackground() {
@@ -431,7 +529,7 @@ export default function ChatView({
             const isUser = m.role === "user";
             const isLast = idx === chat.messages.length - 1;
             const cp = cpByMessage.get(m.id);
-            const showStream = streaming && isLast && streamMode !== "insert";
+            const showStream = streaming && !chatIsHorde && isLast && streamMode !== "insert";
             return (
               <div key={m.id} className={cx("group flex gap-2.5 animate-fade-in", isUser && "flex-row-reverse")}>
                 {!isUser && <Avatar src={character?.avatar} name={character?.name ?? "AI"} size={32} />}
@@ -492,7 +590,18 @@ export default function ChatView({
             );
           })}
 
-          {streaming && streamMode === "insert" && (
+          {generating && chatIsHorde && (
+            <HordeQueueCard
+              queue={hordeQueue}
+              waitTime={horde?.waitTime ?? 0}
+              elapsed={hordeElapsed}
+              stage={hordeStage}
+              avatar={character?.avatar}
+              name={character?.name ?? "AI"}
+              onStop={stopHorde}
+            />
+          )}
+          {streaming && !chatIsHorde && streamMode === "insert" && (
             <div className="flex gap-2.5">
               <Avatar src={character?.avatar} name={character?.name ?? "AI"} size={32} />
               <div className="max-w-[88%] rounded-2xl border border-white/10 bg-slate-900/80 px-3.5 py-2.5 text-[15px] text-slate-200 backdrop-blur-sm space-y-3">
@@ -504,6 +613,10 @@ export default function ChatView({
           <div ref={bottomRef} className="h-1" />
         </div>
       </div>
+
+      {plainWait && (
+        <HordeWaitBar label={plainWait.label} elapsed={waitElapsed} onStop={stopHorde} />
+      )}
 
       {/* Action bar */}
       <div className="relative z-10 shrink-0 border-t border-white/10 bg-[#0c1020]/85 px-3 py-2 backdrop-blur-md">
@@ -560,7 +673,7 @@ export default function ChatView({
           >
             🎨 Scene image
           </Button>
-          {streaming && (
+          {streaming && !chatIsHorde && (
             <Button
               size="xs"
               variant="danger"

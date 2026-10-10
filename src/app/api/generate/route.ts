@@ -10,20 +10,31 @@ import {
   sseStream,
   toLlmConfig,
 } from "@/lib/server";
-import { completeOnce, streamCompletion } from "@/lib/llm";
+import { completeOnce, streamCompletion, type RunOptions } from "@/lib/llm";
 import {
   CONTINUE_INSTRUCTION,
   ELABORATE_INSTRUCTION,
   IMPERSONATE_INSTRUCTION,
+  buildHordePrompt,
   buildPrompt,
   scanLorebook,
+  type BuildArgs,
 } from "@/lib/prompt";
-import { DEFAULT_ASSISTANT_PROMPT, DEFAULT_ROLEPLAY_PROMPT } from "@/lib/defaults";
+import {
+  DEFAULT_ASSISTANT_PROMPT,
+  DEFAULT_ROLEPLAY_PROMPT,
+  providerKind,
+} from "@/lib/defaults";
 
 export const dynamic = "force-dynamic";
+// AI Horde jobs can sit in a community queue for minutes, so allow the longest
+// runtime the plan offers (800s is the Pro/Enterprise max; Hobby caps at 300).
 export const maxDuration = 300;
 
 type Action = "send" | "regenerate" | "continue" | "elaborate" | "impersonate";
+
+/** Give up on a Horde job shortly before the route itself is killed. */
+const HORDE_TIMEOUT_MS = (maxDuration - 20) * 1000;
 
 export async function POST(req: Request) {
   let body: {
@@ -57,7 +68,9 @@ export async function POST(req: Request) {
         400,
       );
     }
-    if (!conn.model) {
+    const isHorde = providerKind(conn.provider) === "horde";
+    // Horde may run with an empty model list (let the network choose).
+    if (!conn.model && !isHorde) {
       return errorJson(new Error(`Connection "${conn.name}" has no model selected.`), 400);
     }
 
@@ -135,8 +148,9 @@ export async function POST(req: Request) {
     // elaborate/impersonate are fresh directives — they go in as a new user
     // turn so every provider reliably answers instead of "continuing".
 
-    const built = buildPrompt({
+    const promptArgs: BuildArgs = {
       mode,
+      action,
       character,
       personaName: s.personaName,
       personaDescription: s.personaDescription,
@@ -153,13 +167,21 @@ export async function POST(req: Request) {
       taskInstruction,
       taskInstructionRole: action === "continue" ? "system" : "user",
       continuationSeed,
-    });
+    };
+
+    // AI Horde is a plain-completion model: it gets a hand-built prose prompt
+    // (no roleplay/assistant system prompt, no NSFW directive) plus a stop
+    // sequence. Every other provider keeps the normal chat prompt unchanged.
+    const built = isHorde ? buildHordePrompt(promptArgs) : buildPrompt(promptArgs);
 
     const cfg = toLlmConfig(conn);
+    const hordeOpts: RunOptions | undefined = isHorde
+      ? { signal: req.signal, stopSequence: built.stopSequence, timeoutMs: HORDE_TIMEOUT_MS }
+      : undefined;
 
     // Impersonate returns text without persisting anything.
     if (action === "impersonate") {
-      const raw = (await completeOnce(cfg, built.messages)).trim();
+      const raw = (await completeOnce(cfg, built.messages, hordeOpts)).trim();
       const text = cleanup(raw, character?.name ?? "", s.personaName);
       if (!text) {
         return errorJson(
@@ -172,7 +194,8 @@ export async function POST(req: Request) {
       return Response.json({ ok: true, text });
     }
 
-    if (!s.streaming) {
+    // Horde always uses the SSE path so the queue status can stream to the UI.
+    if (!s.streaming && !isHorde) {
       const text = cleanup(
         (await completeOnce(cfg, built.messages)).trim(),
         character?.name ?? "",
@@ -198,8 +221,13 @@ export async function POST(req: Request) {
 
     return sseStream(async (send) => {
       send("meta", { stats: built.stats, model: conn.model, connection: conn.name });
+      // "horde" events carry the queue status on every poll and keep the SSE
+      // connection alive while the job waits.
+      const opts: RunOptions | undefined = hordeOpts
+        ? { ...hordeOpts, onStatus: (status) => send("horde", status) }
+        : undefined;
       let acc = "";
-      for await (const chunk of streamCompletion(cfg, built.messages)) {
+      for await (const chunk of streamCompletion(cfg, built.messages, opts)) {
         acc += chunk;
         send("delta", { text: chunk });
       }
