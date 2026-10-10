@@ -72,7 +72,7 @@ function hordeFlatten(messages: ChatMessage[]) {
 }
 
 /** The model field accepts several names separated by commas. */
-function hordeModelNames(model: string) {
+export function hordeModelNames(model: string) {
   return (model || "")
     .split(",")
     .map((s) => s.trim().replace(/\s*\(\d+\s+workers?\)$/i, ""))
@@ -492,6 +492,72 @@ export async function listModels(cfg: {
   if (!res.ok) throw new Error(await res.text());
   const j = (await res.json()) as { data?: Array<{ id?: string }> };
   return (j.data ?? []).map((m) => m.id ?? "").filter(Boolean).sort();
+}
+
+/**
+ * Connectivity check for the Settings → Connections "Test" button on an AI
+ * Horde connection. Unlike every other provider this deliberately does NOT
+ * submit a generation job (which would sit in the community queue for minutes
+ * and spend kudos):
+ *   1. read the network heartbeat,
+ *   2. if a key is set, validate it with find_user and read username/kudos,
+ *   3. if models are set, count the workers currently serving each name.
+ * Returns one human-readable line; throws a friendly message on failure.
+ */
+export async function probeHorde(cfg: {
+  baseUrl: string;
+  apiKey: string;
+  model?: string;
+}): Promise<string> {
+  const base = trimUrl(cfg.baseUrl) || HORDE_DEFAULT_BASE;
+  const headers = hordeHeaders({ apiKey: cfg.apiKey });
+
+  try {
+    const res = await fetch(`${base}/status/heartbeat`, { headers });
+    if (!res.ok) throw new Error(`${res.status}`);
+  } catch {
+    throw new Error("AI Horde is unreachable right now");
+  }
+
+  const parts = ["Connected"];
+
+  if ((cfg.apiKey ?? "").trim()) {
+    let user: { username?: string; kudos?: number } | null = null;
+    try {
+      const res = await fetch(`${base}/find_user`, { headers });
+      if (res.ok) user = (await res.json()) as { username?: string; kudos?: number };
+    } catch {
+      user = null;
+    }
+    if (!user) throw new Error("That AI Horde key wasn't accepted");
+    parts.push(
+      `key ok \u00b7 ${user.username || "unknown user"} (${Math.round(Number(user.kudos) || 0).toLocaleString("en-US")} kudos)`,
+    );
+  }
+
+  const names = hordeModelNames(cfg.model ?? "");
+  if (names.length) {
+    let models: Array<{ name?: string; count?: number }> = [];
+    try {
+      const res = await fetch(`${base}/status/models?type=text`, { headers });
+      if (res.ok) models = (await res.json()) as Array<{ name?: string; count?: number }>;
+    } catch {
+      models = [];
+    }
+    const counts = new Map(
+      (Array.isArray(models) ? models : []).map((m) => [m?.name ?? "", Number(m?.count ?? 0)]),
+    );
+    for (const name of names) {
+      const count = counts.get(name) ?? 0;
+      parts.push(
+        count > 0
+          ? `${count} worker${count === 1 ? "" : "s"} on ${name}`
+          : `No workers are serving ${name} right now`,
+      );
+    }
+  }
+
+  return parts.join(" \u00b7 ");
 }
 
 /** Rough token estimate — 1 token ≈ 3.7 chars for English prose. */

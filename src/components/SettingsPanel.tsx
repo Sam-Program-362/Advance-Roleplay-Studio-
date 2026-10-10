@@ -278,6 +278,9 @@ function ConnectionsTab({
       if (action === "models") {
         setModels(res.models ?? []);
         toast(`${res.models?.length ?? 0} models found`);
+      } else if (providerKind(draft.provider) === "horde") {
+        // The Horde check never generates — it already returns one readable line.
+        toast(res.reply ?? "Connected");
       } else {
         toast(`Connected — model replied: ${(res.reply ?? "").slice(0, 40)}`);
       }

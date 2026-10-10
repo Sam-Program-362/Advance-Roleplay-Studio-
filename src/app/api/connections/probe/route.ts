@@ -1,4 +1,4 @@
-import { completeOnce, listModels } from "@/lib/llm";
+import { completeOnce, listModels, probeHorde } from "@/lib/llm";
 import { providerKind } from "@/lib/defaults";
 import { errorJson, json } from "@/lib/server";
 
@@ -15,6 +15,17 @@ export async function POST(req: Request) {
       model?: string;
     };
     if (body.action === "test") {
+      // AI Horde gets a special, non-generating check: submitting a job here
+      // would queue behind real work for minutes. Every other provider keeps
+      // the usual one-token "reply CONNECTED" prompt.
+      if (providerKind(body.provider) === "horde") {
+        const reply = await probeHorde({
+          baseUrl: body.baseUrl,
+          apiKey: body.apiKey,
+          model: body.model,
+        });
+        return json({ ok: true, reply });
+      }
       const out = await completeOnce(
         {
           provider: body.provider,
@@ -26,8 +37,6 @@ export async function POST(req: Request) {
           topP: 1,
         },
         [{ role: "user", content: "Reply with exactly: CONNECTED" }],
-        // A Horde job may sit in the queue — keep the probe inside its own limit.
-        providerKind(body.provider) === "horde" ? { timeoutMs: 45_000 } : undefined,
       );
       return json({ ok: true, reply: out });
     }
