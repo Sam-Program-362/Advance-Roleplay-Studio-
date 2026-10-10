@@ -43,12 +43,26 @@ export const settings = pgTable("settings", {
   nsfwPrompt: text("nsfw_prompt").notNull().default(""),
   personaName: text("persona_name").notNull().default("User"),
   personaDescription: text("persona_description").notNull().default(""),
+  imageConnectionId: integer("image_connection_id"),
+  imageModel: text("image_model").notNull().default(""),
+  imageAspect: text("image_aspect").notNull().default("1:1"),
   summaryInstructions: text("summary_instructions").notNull().default(""),
   autoSummarize: boolean("auto_summarize").notNull().default(false),
   autoSummarizeEvery: integer("auto_summarize_every").notNull().default(24),
   streaming: boolean("streaming").notNull().default(true),
   theme: text("theme").notNull().default("midnight"),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+/* ------------------------------------------------------------------ */
+/* Personas — multiple roleplayer identities (SillyTavern-style)       */
+/* ------------------------------------------------------------------ */
+export const personas = pgTable("personas", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+  description: text("description").notNull().default(""),
+  avatar: text("avatar").notNull().default(""), // data URL, optional
+  createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
 /* ------------------------------------------------------------------ */
@@ -147,6 +161,7 @@ export const checkpoints = pgTable("checkpoints", {
 
 export type Connection = typeof connections.$inferSelect;
 export type Settings = typeof settings.$inferSelect;
+export type Persona = typeof personas.$inferSelect;
 export type Character = typeof characters.$inferSelect;
 export type Lorebook = typeof lorebooks.$inferSelect;
 export type LorebookEntry = typeof lorebookEntries.$inferSelect;

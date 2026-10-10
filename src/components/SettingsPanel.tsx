@@ -15,6 +15,7 @@ import {
   cx,
   inputCls,
 } from "./ui";
+import PersonaManager from "./PersonaManager";
 import {
   DEFAULT_ASSISTANT_PROMPT,
   DEFAULT_NSFW_PROMPT,
@@ -166,24 +167,7 @@ export default function SettingsPanel({
 
         {tab === "persona" && (
           <>
-            <Field label="Your persona name" hint="Replaces the {{user}} macro everywhere.">
-              <TextInput
-                value={settings.personaName}
-                onChange={(v) => onSettings({ personaName: v })}
-                placeholder="User"
-              />
-            </Field>
-            <Field
-              label="Your persona description"
-              hint="Who you are in the story. Pinned into every roleplay prompt."
-            >
-              <AutoTextarea
-                value={settings.personaDescription}
-                onChange={(v) => onSettings({ personaDescription: v })}
-                minRows={6}
-                placeholder="A weary courier with a forged travel writ and a debt to the wrong people."
-              />
-            </Field>
+            <PersonaManager settings={settings} onPatch={onSettings} toast={toast} />
             <div className="rounded-xl border border-white/10 bg-slate-950/40 p-3">
               <Toggle
                 checked={settings.streaming}
@@ -517,6 +501,58 @@ function ConnectionsTab({
           </Field>
         </div>
       )}
+
+      {/* Image generation — same pattern as the Roleplay / AI Writer defaults */}
+      <div className="space-y-3 rounded-xl border border-white/10 bg-slate-950/40 p-3">
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+            🎨 Image generation
+          </p>
+          <span className="text-[10px] text-slate-500">scene images are temporary</span>
+        </div>
+        <Field
+          label="Image connection"
+          hint="Which connection's key/provider is used for scene images. Pick one whose provider supports images (OpenAI or Google)."
+        >
+          <select
+            value={settings.imageConnectionId ?? ""}
+            onChange={(e) =>
+              onSettings({
+                imageConnectionId: e.target.value ? Number(e.target.value) : null,
+              })
+            }
+            className={inputCls}
+          >
+            <option value="">Same as chat connection</option>
+            {connections.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name} ({c.provider})
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field
+          label="Image model"
+          hint="Leave empty to reuse the connection's model. Must be an image model."
+        >
+          <TextInput
+            value={settings.imageModel}
+            onChange={(v) => onSettings({ imageModel: v })}
+            placeholder="dall-e-3 · gpt-image-1 · gemini-2.0-flash-preview-image-generation"
+          />
+        </Field>
+        <Field label="Aspect ratio">
+          <select
+            value={settings.imageAspect}
+            onChange={(e) => onSettings({ imageAspect: e.target.value })}
+            className={inputCls}
+          >
+            <option value="1:1">1:1 — Square</option>
+            <option value="16:9">16:9 — Widescreen</option>
+            <option value="9:16">9:16 — Portrait</option>
+          </select>
+        </Field>
+      </div>
     </div>
   );
 }

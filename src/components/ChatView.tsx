@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AppSettings, Character, ChatMessage, Checkpoint, FullChat } from "@/lib/client";
 import { api, generate } from "@/lib/client";
 import { AutoTextarea, Avatar, Button, Field, ImageUpload, Modal, Slider, cx } from "./ui";
+import PersonaManager from "./PersonaManager";
 
 /* ---------- roleplay prose renderer ---------- */
 function renderContent(text: string) {
@@ -48,6 +49,7 @@ export default function ChatView({
   settings,
   onReload,
   onPatchCharacter,
+  onPatchSettings,
   onOpenSessions,
   toast,
   headerLeft,
@@ -57,6 +59,7 @@ export default function ChatView({
   settings: AppSettings;
   onReload: () => Promise<void>;
   onPatchCharacter?: (id: number, patch: Partial<Character>) => Promise<void>;
+  onPatchSettings: (patch: Partial<AppSettings>) => void;
   onOpenSessions: () => void;
   toast: (m: string, k?: "ok" | "err") => void;
   headerLeft?: React.ReactNode;
@@ -72,6 +75,16 @@ export default function ChatView({
   const [summaryDraft, setSummaryDraft] = useState(chat.summary);
   const [summaryInstr, setSummaryInstr] = useState(chat.summaryInstructions);
   const [stats, setStats] = useState<Record<string, unknown> | null>(null);
+
+  /* persona quick-switcher */
+  const [personaOpen, setPersonaOpen] = useState(false);
+
+  /* temporary scene image — kept in component state only, never persisted */
+  const [imgOpen, setImgOpen] = useState(false);
+  const [imgBusy, setImgBusy] = useState(false);
+  const [imgSrc, setImgSrc] = useState("");
+  const [imgModel, setImgModel] = useState("");
+  const [imgErr, setImgErr] = useState("");
 
   /* chat background (unique to this character) */
   const [bgOpen, setBgOpen] = useState(false);
@@ -123,7 +136,7 @@ export default function ChatView({
     setStreaming(true);
     setStreamText("");
     setStreamMode(
-      action === "continue" || action === "elaborate"
+      action === "continue"
         ? "append"
         : action === "regenerate"
           ? "replace"
@@ -195,11 +208,62 @@ export default function ChatView({
       });
       const j = (await res.json()) as { text?: string; error?: string };
       if (j.error) throw new Error(j.error);
-      setInput(j.text ?? "");
+      const text = (j.text ?? "").trim();
+      if (!text) {
+        throw new Error(
+          "The model returned an empty response. Try again, or pick a different model in Settings → Connections.",
+        );
+      }
+      setInput(text);
+      toast("Impersonated reply placed in your composer");
     } catch (e) {
       toast(e instanceof Error ? e.message : "Impersonate failed", "err");
     } finally {
       setStreaming(false);
+    }
+  }
+
+  /* ---------- temporary scene image ---------- */
+  async function genImage() {
+    setImgBusy(true);
+    setImgErr("");
+    try {
+      const res = await api.image(chat.id);
+      setImgSrc(res.image);
+      setImgModel(res.model);
+    } catch (e) {
+      setImgErr(e instanceof Error ? e.message : "Image generation failed");
+    } finally {
+      setImgBusy(false);
+    }
+  }
+
+  function openImage() {
+    setImgOpen(true);
+    void genImage();
+  }
+
+  function closeImage() {
+    setImgOpen(false);
+    setImgSrc("");
+    setImgErr("");
+  }
+
+  async function downloadImage() {
+    if (!imgSrc) return;
+    try {
+      const res = await fetch(imgSrc);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `scene-image-${chat.id}.png`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    } catch {
+      window.open(imgSrc, "_blank");
     }
   }
 
@@ -319,6 +383,16 @@ export default function ChatView({
         >
           ⬇
         </a>
+        <Button
+          size="xs"
+          variant="soft"
+          className="rounded-full max-w-[130px]"
+          onClick={() => setPersonaOpen(true)}
+          title="Switch persona"
+        >
+          🧑
+          <span className="hidden sm:inline ml-1 truncate">{settings.personaName || "Persona"}</span>
+        </Button>
         <Button size="xs" variant="soft" className="rounded-full" onClick={() => setMemoryOpen(true)} title="Story memory">
           🧠<span className="hidden sm:inline ml-1">Memory</span>
         </Button>
@@ -476,6 +550,16 @@ export default function ChatView({
           >
             🧠 Summarise
           </Button>
+          <Button
+            size="xs"
+            variant="soft"
+            className="rounded-full"
+            disabled={streaming || imgBusy || !hasMessages}
+            onClick={() => openImage()}
+            title="Generate an image of the current scenario — temporary, never saved to your roleplay"
+          >
+            🎨 Scene image
+          </Button>
           {streaming && (
             <Button
               size="xs"
@@ -504,12 +588,6 @@ export default function ChatView({
               placeholder={
                 character ? `Write as ${settings.personaName || "you"}…` : "Ask anything…"
               }
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                  e.preventDefault();
-                  void send();
-                }
-              }}
               className="bg-[#121627] border-white/15 focus:border-violet-500 rounded-2xl shadow-inner text-sm"
             />
           </div>
@@ -523,7 +601,7 @@ export default function ChatView({
                 ? "bg-slate-800/80 text-slate-600"
                 : "bg-gradient-to-tr from-violet-600 to-indigo-500 text-white shadow-violet-600/40 hover:from-violet-500 hover:to-indigo-400 hover:scale-102",
             )}
-            title="Send (Enter)"
+            title="Send message"
           >
             {streaming ? "…" : "➤"}
           </button>
@@ -718,6 +796,92 @@ export default function ChatView({
                 ))}
               </div>
             </Field>
+          )}
+        </div>
+      </Modal>
+
+      {/* Persona switcher modal */}
+      <Modal
+        open={personaOpen}
+        onClose={() => setPersonaOpen(false)}
+        title="🧑 Personas"
+        wide
+        footer={
+          <Button variant="primary" onClick={() => setPersonaOpen(false)}>
+            Done
+          </Button>
+        }
+      >
+        <p className="mb-3 text-[11px] leading-relaxed text-slate-500">
+          Switch who <span className="text-slate-300">you</span> are in this story — the active
+          persona supplies the <code className="text-violet-300">{"{{user}}"}</code> name and is
+          pinned into every prompt, just like SillyTavern personas.
+        </p>
+        <PersonaManager settings={settings} onPatch={onPatchSettings} toast={toast} />
+      </Modal>
+
+      {/* Temporary scene image modal */}
+      <Modal
+        open={imgOpen}
+        onClose={closeImage}
+        title="🎨 Scene image"
+        wide
+        footer={
+          <>
+            <Button variant="ghost" onClick={closeImage}>
+              Close
+            </Button>
+            <Button variant="soft" disabled={imgBusy} onClick={() => void genImage()}>
+              {imgBusy ? "Generating…" : "↻ Regenerate"}
+            </Button>
+            <Button variant="primary" disabled={imgBusy || !imgSrc} onClick={() => void downloadImage()}>
+              ⬇ Download
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <p className="text-[11px] leading-relaxed text-slate-500">
+            Built from the last few turns plus the character and your active persona —{" "}
+            <span className="text-slate-300">temporary</span>: it is never saved to your roleplay,
+            so download it if you want to keep it.
+          </p>
+
+          {imgBusy && (
+            <div className="grid place-items-center rounded-2xl border border-white/10 bg-slate-950/50 p-12 text-center">
+              <div className="mx-auto mb-3 h-8 w-8 animate-spin rounded-full border-2 border-violet-500 border-t-transparent" />
+              <p className="text-sm text-slate-300">Generating scene image…</p>
+              <p className="mt-1 text-[11px] text-slate-500">
+                {settings.imageModel
+                  ? `Model: ${settings.imageModel}`
+                  : "Model from your image connection"}
+              </p>
+            </div>
+          )}
+
+          {!imgBusy && imgErr && (
+            <div className="rounded-2xl border border-rose-500/30 bg-rose-950/30 p-6 text-center">
+              <p className="text-sm leading-relaxed text-rose-200">{imgErr}</p>
+              <Button
+                size="sm"
+                variant="soft"
+                className="mt-3 rounded-full"
+                onClick={() => void genImage()}
+              >
+                Try again
+              </Button>
+            </div>
+          )}
+
+          {!imgBusy && imgSrc && (
+            <div className="overflow-hidden rounded-2xl border border-white/10 bg-slate-950/50">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={imgSrc} alt="Generated scene" className="mx-auto max-h-[62vh] w-auto" />
+            </div>
+          )}
+
+          {!imgBusy && imgSrc && imgModel && (
+            <p className="text-[10px] text-slate-500">Model: {imgModel}</p>
           )}
         </div>
       </Modal>

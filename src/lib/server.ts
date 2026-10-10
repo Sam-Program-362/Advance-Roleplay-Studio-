@@ -7,7 +7,7 @@ import {
   lorebooks,
   settings,
 } from "@/db/schema";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import {
   DEFAULT_ASSISTANT_PROMPT,
   DEFAULT_NSFW_PROMPT,
@@ -17,7 +17,32 @@ import {
 import type { LlmConfig } from "./llm";
 import type { ScanEntry } from "./prompt";
 
+/**
+ * Idempotent, once-per-process schema upgrade. Existing databases were created
+ * before these columns/table existed, so ALTER/CREATE IF NOT EXISTS keeps them
+ * in sync with schema.ts without requiring a manual migration run.
+ */
+let schemaReady: Promise<void> | null = null;
+export function ensureSchema(): Promise<void> {
+  if (!schemaReady) {
+    schemaReady = (async () => {
+      const stmts = [
+        "ALTER TABLE settings ADD COLUMN IF NOT EXISTS image_connection_id integer",
+        "ALTER TABLE settings ADD COLUMN IF NOT EXISTS image_model text NOT NULL DEFAULT ''",
+        "ALTER TABLE settings ADD COLUMN IF NOT EXISTS image_aspect text NOT NULL DEFAULT '1:1'",
+        "CREATE TABLE IF NOT EXISTS personas (id serial PRIMARY KEY, name text NOT NULL, description text NOT NULL DEFAULT '', avatar text NOT NULL DEFAULT '', created_at timestamp NOT NULL DEFAULT now())",
+      ];
+      for (const s of stmts) await db.execute(sql.raw(s));
+    })().catch((e) => {
+      schemaReady = null; // retry on next call
+      throw e;
+    });
+  }
+  return schemaReady;
+}
+
 export async function getSettings() {
+  await ensureSchema();
   const rows = await db.select().from(settings).where(eq(settings.id, 1)).limit(1);
   if (rows.length) return rows[0];
   const inserted = await db

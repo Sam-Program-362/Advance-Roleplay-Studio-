@@ -85,6 +85,13 @@ export type BuildArgs = {
   maxTokens: number;
   /** Extra instruction appended after history (continue / elaborate / impersonate). */
   taskInstruction?: string;
+  /**
+   * Where the task instruction is injected. "user" (a fresh turn at the very
+   * end) guarantees every provider actually responds — Anthropic/Google must
+   * end on a user turn, and a trailing system message after the model's own
+   * reply can be silently ignored or mistaken for a continuation prefill.
+   */
+  taskInstructionRole?: "system" | "user";
   /** When continuing, this is the partial text the model must extend. */
   continuationSeed?: string;
 };
@@ -197,7 +204,10 @@ export function buildPrompt(args: BuildArgs): BuiltPrompt {
   }
 
   if (args.taskInstruction) {
-    messages.push({ role: "system", content: M(args.taskInstruction) });
+    messages.push({
+      role: args.taskInstructionRole === "user" ? "user" : "system",
+      content: M(args.taskInstruction),
+    });
   }
   if (args.continuationSeed) {
     messages.push({ role: "assistant", content: args.continuationSeed });
@@ -226,17 +236,18 @@ Your previous message was cut off. You must now continue it SEAMLESSLY from the 
 - Output ONLY the continuation text. No preamble, no recap, no quotation of prior text.`;
 
 export const ELABORATE_INSTRUCTION = `[ELABORATION TASK]
-Re-enter the scene you just wrote and expand it, deepening the same moment instead of advancing past it.
+You are writing a BRAND-NEW message that re-enters the scene from your previous message and expands it, deepening the same moment instead of advancing past it.
 - Keep the same location, time, characters, mood, tense and POV as your previous message.
 - Add: sensory texture (sight, sound, smell, touch, temperature), body language and micro-expressions, {{char}}'s interior thought and motivation, and one fresh concrete detail or small escalation.
 - Do NOT repeat sentences you already wrote and do NOT contradict them. Do NOT act or speak for {{user}}.
-- Match the existing prose formatting exactly.
-- Write 2–4 new paragraphs that read as a natural extension of the previous message, then stop on a beat that invites {{user}} to respond.
-- Output ONLY the new prose.`;
+- Match the existing prose formatting exactly: *asterisks* for narration/action, "quotes" for speech.
+- Write 2–4 new paragraphs that read as a natural companion piece to your previous message, then stop on a beat that invites {{user}} to respond.
+- Output ONLY the new prose — no preamble, no recap, no heading, no quotation of prior text.`;
 
 export const IMPERSONATE_INSTRUCTION = `[IMPERSONATION TASK]
 Write the NEXT message from {{user}}'s point of view — you are temporarily writing {{user}}, not {{char}}.
 - Stay consistent with {{user}}'s persona and everything established in the scene.
-- Do NOT write {{char}}'s dialogue, actions or thoughts.
+- Do NOT write {{char}}'s dialogue, actions or thoughts. Do NOT narrate {{char}}'s reactions.
 - Use the same prose format: *asterisks* for action, "quotes" for speech. 1–2 paragraphs.
+- Never prefix the output with {{user}}'s name, a speaker label or a colon.
 - Output only the message text.`;
