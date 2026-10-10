@@ -29,7 +29,7 @@ import {
 export const dynamic = "force-dynamic";
 // AI Horde jobs can sit in a community queue for minutes, so allow the longest
 // runtime the plan offers (800s is the Pro/Enterprise max; Hobby caps at 300).
-export const maxDuration = 800;
+export const maxDuration = 300;
 
 type Action = "send" | "regenerate" | "continue" | "elaborate" | "impersonate";
 
