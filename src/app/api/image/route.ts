@@ -257,6 +257,14 @@ export async function POST(req: Request) {
         400,
       );
     }
+    if (providerKind(conn.provider) === "horde") {
+      return errorJson(
+        new Error(
+          "AI Horde text connections cannot generate images. In Settings → Connections → Image generation, pick an OpenAI or Google connection (e.g. dall-e-3, gpt-image-1 or a Gemini image model).",
+        ),
+        400,
+      );
+    }
     const model = s.imageModel?.trim() || conn.model;
     if (!model) {
       return errorJson(

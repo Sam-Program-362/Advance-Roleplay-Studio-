@@ -10,8 +10,8 @@ import {
   toLlmConfig,
 } from "@/lib/server";
 import { completeOnce, estimateTokens } from "@/lib/llm";
-import { SUMMARY_SYSTEM_PROMPT } from "@/lib/defaults";
-import { applyMacros } from "@/lib/prompt";
+import { SUMMARY_SYSTEM_PROMPT, providerKind } from "@/lib/defaults";
+import { applyMacros, buildHordeInstruction } from "@/lib/prompt";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 180;
@@ -33,7 +33,8 @@ export async function POST(req: Request) {
 
     const s = await getSettings();
     const conn = await getActiveConnection(s.writerConnectionId ?? s.activeConnectionId);
-    if (!conn || !conn.model) {
+    const isHorde = conn ? providerKind(conn.provider) === "horde" : false;
+    if (!conn || (!conn.model && !isHorde)) {
       return errorJson(new Error("No API connection with a model is configured."), 400);
     }
     const character = chat.characterId ? await getCharacter(chat.characterId) : null;
@@ -93,16 +94,24 @@ export async function POST(req: Request) {
       `Now output the single updated STORY MEMORY as unformatted prose describing how the story built up and progressed. No lists, no headings, no character profile.`,
     );
 
+    const sysText = applyMacros(SUMMARY_SYSTEM_PROMPT, { char: charName, user: userName });
+    const userText = parts.join("\n\n---\n\n");
+
+    // Horde is a plain-completion model: one flat instruction string ending in
+    // "Response:" instead of chat roles.
     const text = await completeOnce(
       {
         ...toLlmConfig(conn),
         temperature: 0.6,
         maxTokens: Math.min(900, Math.max(400, conn.maxTokens)),
       },
-      [
-        { role: "system", content: applyMacros(SUMMARY_SYSTEM_PROMPT, { char: charName, user: userName }) },
-        { role: "user", content: parts.join("\n\n---\n\n") },
-      ],
+      isHorde
+        ? [{ role: "user", content: buildHordeInstruction(sysText, userText) }]
+        : [
+            { role: "system", content: sysText },
+            { role: "user", content: userText },
+          ],
+      isHorde ? { signal: req.signal, timeoutMs: (maxDuration - 20) * 1000 } : undefined,
     );
 
     const clean = text

@@ -516,6 +516,7 @@ export default function Studio() {
               chat={chat}
               character={activeCharacter}
               settings={settings}
+              connections={connections}
               onReload={reloadChat}
               onPatchCharacter={patchCharacter}
               onPatchSettings={patchSettings}

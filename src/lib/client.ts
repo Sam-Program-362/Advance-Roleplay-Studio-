@@ -1,5 +1,7 @@
 "use client";
 
+import type { HordeStatus } from "./llm";
+
 export type Connection = {
   id: number;
   name: string;
@@ -208,10 +210,11 @@ export const api = {
       method: "DELETE",
     }),
 
-  summarize: (chatId: number, instructions?: string, fromScratch?: boolean) =>
+  summarize: (chatId: number, instructions?: string, fromScratch?: boolean, signal?: AbortSignal) =>
     req<{ summary: string }>("/api/summarize", {
       method: "POST",
       body: JSON.stringify({ chatId, instructions, fromScratch }),
+      signal,
     }),
 
   personas: () => req<Persona[]>("/api/personas"),
@@ -263,6 +266,8 @@ export type GenerateEvents = {
   onDelta?: (t: string) => void;
   onDone?: (d: { message: ChatMessage; mode: string }) => void;
   onError?: (msg: string) => void;
+  /** AI Horde only — queue status pushed on every poll. */
+  onHorde?: (s: HordeStatus) => void;
 };
 
 export async function generate(
@@ -325,6 +330,7 @@ export async function generate(
       if (evName === "meta") ev.onMeta?.(data as never);
       else if (evName === "delta") ev.onDelta?.(String(data.text ?? ""));
       else if (evName === "done") ev.onDone?.(data as never);
+      else if (evName === "horde") ev.onHorde?.(data as unknown as HordeStatus);
       else if (evName === "error") ev.onError?.(String(data.message ?? "error"));
     }
   }

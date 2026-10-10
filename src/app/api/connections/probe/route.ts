@@ -1,4 +1,5 @@
 import { completeOnce, listModels } from "@/lib/llm";
+import { providerKind } from "@/lib/defaults";
 import { errorJson, json } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
@@ -25,6 +26,8 @@ export async function POST(req: Request) {
           topP: 1,
         },
         [{ role: "user", content: "Reply with exactly: CONNECTED" }],
+        // A Horde job may sit in the queue — keep the probe inside its own limit.
+        providerKind(body.provider) === "horde" ? { timeoutMs: 45_000 } : undefined,
       );
       return json({ ok: true, reply: out });
     }

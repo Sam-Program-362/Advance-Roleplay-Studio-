@@ -3,7 +3,7 @@
 import { useState } from "react";
 import type { AppSettings, Connection } from "@/lib/client";
 import { api } from "@/lib/client";
-import { PROVIDERS } from "@/lib/defaults";
+import { HORDE_TRUSTED_KEY, PROVIDERS, providerKind } from "@/lib/defaults";
 import {
   AutoTextarea,
   Button,
@@ -290,6 +290,7 @@ function ConnectionsTab({
 
   const presetModels = PROVIDERS.find((p) => p.id === draft?.provider)?.models ?? [];
   const modelOptions = Array.from(new Set([...models, ...presetModels]));
+  const isHorde = draft ? providerKind(draft.provider) === "horde" : false;
 
   return (
     <div className="space-y-4">
@@ -383,21 +384,40 @@ function ConnectionsTab({
             </select>
           </Field>
 
-          <Field label="API base URL" hint="Any OpenAI-compatible /v1 endpoint works.">
+          <Field
+            label="API base URL"
+            hint={
+              isHorde
+                ? "AI Horde API root — leave as https://aihorde.net/api/v2."
+                : "Any OpenAI-compatible /v1 endpoint works."
+            }
+          >
             <TextInput value={draft.baseUrl} onChange={(v) => void saveDraft({ baseUrl: v })} />
           </Field>
 
-          <Field label="API key" hint="Stored server-side and proxied — never exposed to the browser bundle.">
+          <Field
+            label="API key"
+            hint={
+              isHorde
+                ? "Leave empty for anonymous (slow) or paste your free key from aihorde.net"
+                : "Stored server-side and proxied — never exposed to the browser bundle."
+            }
+          >
             <TextInput
               type="password"
               value={draft.apiKey}
               onChange={(v) => void saveDraft({ apiKey: v })}
-              placeholder="sk-…"
+              placeholder={isHorde ? "0000000000 (anonymous)" : "sk-…"}
             />
           </Field>
 
           <Field
             label="Model"
+            hint={
+              isHorde
+                ? "Several names separated by commas are sent together as AI Horde's models array. Leave empty to let the network choose any worker (slowest)."
+                : undefined
+            }
             action={
               <div className="flex gap-1.5">
                 <Button size="xs" variant="soft" disabled={probing} onClick={() => void probe("models")}>
@@ -412,7 +432,7 @@ function ConnectionsTab({
             <TextInput
               value={draft.model}
               onChange={(v) => void saveDraft({ model: v })}
-              placeholder="model id"
+              placeholder={isHorde ? "KoboldAI/LLaMA2-13B-Tiefighter, …" : "model id"}
             />
             {modelOptions.length > 0 && (
               <select
@@ -429,6 +449,22 @@ function ConnectionsTab({
               </select>
             )}
           </Field>
+
+          {isHorde && (
+            <div className="rounded-lg border border-white/10 bg-slate-950/40 p-3">
+              <Toggle
+                checked={(draft.extraHeaders ?? {})[HORDE_TRUSTED_KEY] === "1"}
+                onChange={(v) => {
+                  const next = { ...(draft.extraHeaders ?? {}) };
+                  if (v) next[HORDE_TRUSTED_KEY] = "1";
+                  else delete next[HORDE_TRUSTED_KEY];
+                  void saveDraft({ extraHeaders: next });
+                }}
+                label="Trusted workers only"
+                hint="Only send jobs to AI Horde workers marked as trusted — a slower queue, but generally better models and steadier output."
+              />
+            </div>
+          )}
 
           <div className="grid gap-3 sm:grid-cols-2">
             <Slider
