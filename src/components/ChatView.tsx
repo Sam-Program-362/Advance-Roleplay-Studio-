@@ -62,6 +62,7 @@ export default function ChatView({
   onPatchCharacter,
   onPatchSettings,
   onOpenSessions,
+  onOpenSettings,
   toast,
   headerLeft,
 }: {
@@ -73,6 +74,7 @@ export default function ChatView({
   onPatchCharacter?: (id: number, patch: Partial<Character>) => Promise<void>;
   onPatchSettings: (patch: Partial<AppSettings>) => void;
   onOpenSessions: () => void;
+  onOpenSettings?: () => void;
   toast: (m: string, k?: "ok" | "err") => void;
   headerLeft?: React.ReactNode;
 }) {
@@ -160,6 +162,8 @@ export default function ChatView({
     [connections, settings.activeConnectionId],
   );
   const chatIsHorde = chatConn ? providerKind(chatConn.provider) === "horde" : false;
+  /* Nothing to generate with yet — a fresh install has no connections at all. */
+  const noConnection = !chatConn;
   const writerConn = useMemo(
     () =>
       connections.find((c) => c.id === (settings.writerConnectionId ?? settings.activeConnectionId)) ??
@@ -511,6 +515,20 @@ export default function ChatView({
         </div>
       )}
 
+      {noConnection && (
+        <div className="relative z-10 flex shrink-0 flex-wrap items-center justify-center gap-x-2 gap-y-1 border-b border-amber-400/20 bg-amber-500/10 px-3 py-2 text-center text-[11px] text-amber-200">
+          <span>Add a connection in Settings first.</span>
+          {onOpenSettings && (
+            <button
+              onClick={onOpenSettings}
+              className="rounded-full border border-amber-300/40 px-2.5 py-0.5 font-semibold text-amber-100 transition hover:bg-amber-400/20"
+            >
+              Open Settings
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Messages */}
       <div ref={scrollRef} className="relative z-10 min-h-0 flex-1 overflow-y-auto overscroll-contain">
         <div className="mx-auto w-full max-w-3xl space-y-3 px-3 py-4">
@@ -518,9 +536,25 @@ export default function ChatView({
             <div className="grid place-items-center rounded-2xl border border-dashed border-white/10 bg-slate-950/40 p-10 text-center">
               <div>
                 <p className="text-3xl">💬</p>
-                <p className="mt-2 text-sm text-slate-400">
-                  Start the scene — send the first message.
-                </p>
+                {noConnection ? (
+                  <>
+                    <p className="mt-2 text-sm text-amber-200">Add a connection in Settings first.</p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      {character?.name ?? "The assistant"} replies are generated through one of your own
+                      AI provider connections — OpenAI, OpenRouter, Claude, Gemini, a local model or AI
+                      Horde. Add one to start writing.
+                    </p>
+                    {onOpenSettings && (
+                      <Button className="mt-4 rounded-full" variant="primary" onClick={onOpenSettings}>
+                        ⚙ Open Settings
+                      </Button>
+                    )}
+                  </>
+                ) : (
+                  <p className="mt-2 text-sm text-slate-400">
+                    Start the scene — send the first message.
+                  </p>
+                )}
               </div>
             </div>
           )}
@@ -707,14 +741,14 @@ export default function ChatView({
           <button
             type="button"
             onClick={() => void send()}
-            disabled={streaming || !input.trim()}
+            disabled={streaming || !input.trim() || noConnection}
             className={cx(
               "grid h-[44px] w-[44px] shrink-0 place-items-center rounded-2xl text-lg transition-all duration-200 active:scale-95 shadow-md",
-              streaming || !input.trim()
+              streaming || !input.trim() || noConnection
                 ? "bg-slate-800/80 text-slate-600"
                 : "bg-gradient-to-tr from-violet-600 to-indigo-500 text-white shadow-violet-600/40 hover:from-violet-500 hover:to-indigo-400 hover:scale-102",
             )}
-            title="Send message"
+            title={noConnection ? "Add a connection in Settings first" : "Send message"}
           >
             {streaming ? "…" : "➤"}
           </button>

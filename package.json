@@ -1,10 +1,11 @@
 {
-  "name": "nextjs-postgresql-template",
+  "name": "roleplay-studio",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "db:push": "drizzle-kit push",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit"
   },

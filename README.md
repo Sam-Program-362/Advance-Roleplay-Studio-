@@ -1,194 +1,224 @@
 # Roleplay Studio
 
-**A multi-provider AI roleplay, character-creation, and interactive storytelling studio.**
+**A self-hosted, multi-provider AI roleplay, character-creation and interactive-storytelling studio.**
 
-Roleplay Studio is a web-based workspace for creating characters, building fictional worlds, and running persistent AI-assisted roleplay sessions. It brings together configurable AI connections, custom prompts, user personas, lorebooks, story summaries, and AI-assisted writing tools.
+Roleplay Studio is a web app for creating characters, building fictional worlds and running
+persistent AI-assisted roleplay sessions. It is a single Next.js application backed by a
+PostgreSQL database **that you own**: bring your own database and your own AI provider keys, and
+you get a completely empty, working studio.
 
-**Live app:** https://advance-roleplay-studio.vercel.app  
-**GitHub repository:** https://github.com/Sam-Program-362/Advance-Roleplay-Studio-
+It ships with **no demo content**. There are no seeded characters, no sample lorebook, no default
+connection and no default chat session — a fresh install opens on empty screens that guide you to
+create your first character and add your first AI connection. Nothing is written to your database
+until you actually create something (the one exception is the single `settings` row, created on
+first load to hold your global preferences).
 
 ## Features
 
-### Character creation and roleplay
+**Characters & roleplay**
 
-- Create and manage characters with personalities, scenarios, first messages, alternate greetings, example dialogue, creator notes, and custom instructions.
-- Configure character-specific context blocks, system prompt overrides, and post-history instructions.
-- Customize character avatars and chat backgrounds.
-- Switch between character roleplay and standalone assistant conversations.
-- Send messages, regenerate replies, continue responses, elaborate on a reply, and impersonate the active user persona.
+- Character sheets with name, avatar, personality/character details, scenario & world context,
+  first message, alternate greetings, example dialogue, creator notes, tags, SFW/NSFW flag, a
+  per-character context block, a per-character system-prompt override and post-history instructions.
+- Per-character chat backgrounds with adjustable blur and opacity.
+- Character card import/export, including Tavern (chara_card_v2/v3) cards and SillyTavern
+  world-info files, plus a portable JSON bundle of character + lorebooks + sessions.
+- Two modes: **Roleplay** (in character) and **Assistant** (a plain general-purpose chat).
 
-### Story memory and lorebooks
+**Story memory & lorebooks**
 
-- Keep conversation history in separate chat sessions.
-- Generate and edit story summaries to help preserve important events and continuity.
-- Customize summary instructions and configure automatic summarization.
-- Create lorebooks for world facts, locations, characters, objects, and other contextual details.
-- Use keyword-triggered entries, secondary keywords, constant entries, priorities, case-sensitivity options, and token budgets.
-- Associate lorebooks with characters and include relevant entries in AI prompts.
-- Budget context so character instructions, story memory, lore, and recent conversation can be considered together.
+- Multiple chat sessions per character, each with its own history.
+- **Story memory**: an AI-written, editable narrative summary of the story so far, with custom
+  summary instructions and optional auto-summarisation every *N* new messages.
+- **Lorebooks**: keyword-triggered world-info entries with secondary (AND) keywords, constant
+  (always-on) entries, case sensitivity, priority ordering and a per-entry enable toggle. Entries
+  are scanned against the recent chat window and inserted into the prompt inside a token budget.
+  Lorebooks can be attached to characters.
+- Context budgeting: pinned character instructions can never be evicted, history and lore are
+  trimmed to fit the connection's context size, and the live token breakdown is shown in the chat.
 
-### Multiple personas
+**Personas**
 
-- Create, edit, delete, and switch between reusable roleplaying personas.
-- Give each persona a name and description.
-- Apply the active persona to prompts across the application.
+- Multiple reusable roleplayer identities (name + description). The active persona replaces the
+  `{{user}}` macro across every prompt; personas can be saved, edited, switched and deleted.
 
-### AI provider connections
+**Many AI providers**
 
-Configure connections to supported services and compatible endpoints, including:
+Every provider is just a *connection* you add in Settings. Built-in presets:
 
-- OpenAI-compatible APIs
-- Anthropic Claude
+- OpenAI-compatible APIs (OpenAI, OpenRouter, DeepSeek, Mistral, Groq, Together, and any custom
+  OpenAI-compatible endpoint such as KoboldCpp, Oobabooga, LM Studio or Ollama)
+- Anthropic (Claude)
 - Google Gemini
-- DeepSeek
-- Mistral AI
-- Groq
-- Together AI
-- KoboldCpp / Oobabooga-compatible endpoints
-- LM Studio / Ollama-compatible local endpoints
-- AI Horde
-- Custom OpenAI-compatible providers
+- **AI Horde** — free, community-powered generation, with a dedicated queue card showing queue
+  position, estimated wait, elapsed time and processing state, plus an optional
+  "trusted/anonymous key" and multi-model list.
 
-Connection settings include provider endpoint, credentials, model, temperature, output-token limit, context size, sampling parameters, penalties, and extra headers where applicable. Actual capabilities, available models, access requirements, and pricing depend on the provider.
+Per connection: base URL, API key, model, temperature, max tokens, top-p, frequency/presence
+penalties, context size and extra headers. Keys are stored server-side and are **never** returned to
+the browser — the UI only ever learns whether a key is saved.
 
-### AI Horde queue handling
+**Scene images**
 
-- Submit asynchronous text-generation jobs to AI Horde.
-- View queue position, estimated wait time, processing state, and elapsed time.
-- Stop an active request where supported by the current queue workflow.
-- Choose a specific model or provide multiple acceptable model names.
-- Use a dedicated queue interface for Horde requests.
+- Generate a temporary illustration of the current scene from recent turns, the character, the
+  scenario and your persona, using a chosen image connection, model and aspect ratio.
+- Scene images are **not** persisted: they are returned to the browser for preview/download and
+  never stored in the database.
 
-AI Horde relies on community-provided workers, so model availability and queue times can vary.
+**AI Writer**
 
-### Temporary scene-image generation
+A dedicated writer endpoint that generates the content of exactly one character/lorebook field at a
+time (name, personality, scenario, greeting, example dialogue, context block, lorebook entry,
+lorebook keywords, system prompt, creator notes) with strict per-field scope rules.
 
-- Generate an illustration based on the current roleplay scene.
-- Build image prompts from recent conversation turns, character details, scenario information, and the active persona.
-- Configure the image connection, model, and aspect ratio.
-- Preview or download a generated image.
+**Chat tools**
 
-Generated scene images are temporary in the current implementation and are not saved to the chat database. Image generation depends on the selected provider and its supported API features.
+- Send, regenerate, continue, elaborate, impersonate (draft your own reply), edit and delete
+  messages, delete-from-here, and checkpoints you can revert to.
+- Streaming responses (toggleable) and a Stop button; AI Horde requests can be cancelled while
+  queued or processing.
 
-### AI Writer
+**Security & PWA**
 
-Use the AI Writer to generate content for supported character and world-building fields, such as character names, personality details, scenarios, greetings, example dialogue, context instructions, and lorebook content. Field-specific instructions help keep generated text focused on the selected field.
+- The whole app — every page, every `/api/*` route — is gated behind a single app password
+  (`APP_PASSWORD`) with a signed, `httpOnly` session cookie, constant-time password comparison and
+  brute-force lockout. Unauthenticated API calls get `401`; pages redirect to `/login`.
+- Installable as a PWA (web app manifest + service worker). The service worker caches nothing and
+  never touches `/api/*` or `/login`.
 
-### Chat management and data portability
+## Requirements
 
-- Manage separate character and assistant sessions.
-- Edit messages and create or use conversation checkpoints.
-- Import and export supported characters, lorebooks, and chat sessions.
-- Use portable JSON-based files for supported data formats.
+- Node.js 20 or newer, and npm
+- A PostgreSQL database you control (Neon's free tier is plenty)
+- One or more AI provider credentials — or a free AI Horde connection, which needs no key
 
-Import compatibility depends on the input file format and the data it contains.
+## Self-hosting in five minutes
 
-### Installable web app
+### 1. Fork and clone
 
-Roleplay Studio includes Progressive Web App (PWA) support through a web app manifest and service-worker registration. It can be installed from compatible browsers on supported mobile and desktop devices. Availability and behavior depend on the browser and platform.
-
-## Technology stack
-
-- **Framework:** Next.js 16
-- **Language:** TypeScript
-- **UI:** React 19 and Tailwind CSS 4
-- **Database:** PostgreSQL
-- **ORM:** Drizzle ORM
-- **Database driver:** `pg` (node-postgres)
-- **Deployment:** Vercel
-- **PWA:** Web app manifest and service worker
-
-## Getting started
-
-### Prerequisites
-
-- A Node.js version compatible with the dependencies in `package.json`
-- npm
-- A PostgreSQL database
-- Credentials for at least one supported AI provider, unless using a provider that does not require a personal key
-
-### 1. Clone the repository
+Fork this repository on GitHub, then clone your fork:
 
 ```bash
-git clone https://github.com/Sam-Program-362/Advance-Roleplay-Studio-.git
-cd Advance-Roleplay-Studio-
+git clone <your-fork-url> roleplay-studio
+cd roleplay-studio
 ```
 
-### 2. Install dependencies
+### 2. Create your own database
+
+Create a **free PostgreSQL database of your own** — for example a free Neon project (Neon, like most
+providers, has its own free-tier limits: project count, storage, compute hours and cold starts).
+Any Postgres will do, as long as *you* control it.
+
+### 3. Configure your environment
+
+Copy the committed template and fill it in:
+
+```bash
+cp env.example .env
+```
+
+| Variable | What it is |
+| --- | --- |
+| `DATABASE_URL` | Your own Postgres connection string (Neon gives you one; keep `?sslmode=require`). |
+| `APP_PASSWORD` | The password for **your** deployment's login screen. Any long random string. It also signs your session cookies, so changing it logs everyone out. |
+
+`.env` (and `.env.local`) are git-ignored. The template is committed as `env.example` so it can
+never be confused with a live secret file. Never commit real credentials.
+
+`npm run db:push` reads `.env` and `.env.local`, so either filename works.
+
+### 4. Install and create the schema
 
 ```bash
 npm install
+npm run db:push
 ```
 
-### 3. Configure the database
+`db:push` creates every table and column the app uses (connections, settings, personas, characters,
+lorebooks, lorebook entries, character↔lorebook links, chats, messages and checkpoints). It is
+idempotent and safe to re-run. It only ever touches the database in *your* `DATABASE_URL`.
 
-Create a local `.env.local` file in the project root and set `DATABASE_URL` to your PostgreSQL connection string:
+If you skip this step the app still starts, but every screen shows
+**"Database is empty. Run npm run db:push once against your database."** — so you can't get stuck
+wondering why nothing works.
 
-```dotenv
-DATABASE_URL=postgresql://USER:PASSWORD@HOST:PORT/DATABASE
-```
-
-Replace the placeholders with your actual database credentials. Ensure your PostgreSQL database has the base application schema before using the app. The application performs a small set of idempotent schema upgrades at startup, but this should not be treated as a replacement for setting up the base schema.
-
-**Security:** Never commit `.env`, `.env.local`, database passwords, or private API credentials. Configure production secrets through your hosting provider's environment settings.
-
-### 4. Start the development server
+### 5. Run it
 
 ```bash
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) in your browser.
+Open `http://localhost:3000`, sign in with `APP_PASSWORD`, then go to
+**Settings → Connections → + Add** and add your own AI provider (or pick **AI Horde** for a
+free, key-less option). Now create a character or switch to **Assistant** and start writing.
 
-### 5. Add an AI connection
+With no connection configured, the chat screen tells you **"Add a connection in Settings first."**
 
-1. Open **Settings → Connections**.
-2. Add a connection for your chosen provider.
-3. Enter the endpoint, credentials, and model information required by that provider.
-4. Test the connection when a test option is available.
-5. Start an assistant conversation or create a character and begin roleplaying.
+## Deploying your own instance (Vercel)
 
-Some providers require paid API access. Local model endpoints must be reachable from the environment where the application is running. AI Horde availability and waiting times depend on its community workers.
+1. Push your fork and import it into your own Vercel account.
+2. Add the environment variables `DATABASE_URL` and `APP_PASSWORD` to your Vercel project
+   (Production, and Preview if you use previews).
+3. **Run `npm run db:push` once against that production database before the first deploy** —
+   the first request otherwise lands on the empty-database screen.
+4. Deploy. Any further deploys just need the two variables to stay in place.
 
-## Development commands
+There is nothing else to configure: no cron jobs, no seeding step, no external services.
+
+## Please do not use someone else's deployment
+
+The author's own live deployment is **private** and is not a public service. It is not an API, it is
+not a backend for your app, and it must never be used as anyone's database, provider proxy or
+storage. Your data belongs in *your* database and your keys belong in *your* deployment. Deploy your
+own instance as described above.
+
+## Provider and service limits
+
+AI providers, hosting and database services each have their own quotas and terms:
+
+- Neon (and other Postgres hosts) limit storage, compute time and concurrent projects on their free
+  tiers, and databases may suspend when idle.
+- Hosted AI providers (OpenAI, Anthropic, Google, OpenRouter, Groq, Mistral, Together, DeepSeek…)
+  require your own account and may charge per token; free tiers are limited and change over time.
+- Local model servers (KoboldCpp, Oobabooga, LM Studio, Ollama) must be reachable from wherever the
+  app runs; a hosted deployment cannot reach `127.0.0.1` on your machine.
+- AI Horde is community-powered and free, but queues can be long and model availability varies.
+
+## Development
 
 | Command | Description |
 | --- | --- |
 | `npm run dev` | Start the development server |
-| `npm run build` | Build the application for production |
-| `npm run start` | Start the production server |
-| `npm run lint` | Run ESLint |
-| `npm run typecheck` | Run TypeScript type checking |
+| `npm run build` | Production build |
+| `npm run start` | Run the production build |
+| `npm run db:push` | Create/update the schema in `DATABASE_URL` |
+| `npm run typecheck` | TypeScript check (`tsc --noEmit`) |
+| `npm run lint` | ESLint |
 
-## Deployment
+### Project layout
 
-The hosted application uses Vercel. To deploy your own instance:
+```
+src/app/api/*        Route handlers (characters, chats, messages, connections, settings,
+                     personas, lorebooks, entries, export/import, generate, summarize,
+                     writer, image, health, auth)
+src/app/login        Login page
+src/proxy.ts         App-password gate for every page and /api/* route
+src/components/*     Studio shell, chat view, character editor, lorebook panel, settings, personas
+src/db/schema.ts     Drizzle schema — the single source of truth for the database
+src/lib/             auth, provider/LLM client, prompt builder, portable import/export, defaults
+public/sw.js         No-cache service worker (PWA installability only)
+```
 
-1. Fork or clone the repository.
-2. Provision a PostgreSQL database and initialize the required schema.
-3. Import the repository into Vercel.
-4. Add `DATABASE_URL` to the required Vercel environment(s).
-5. Deploy the application and check the deployment logs.
-6. Configure AI provider connections in the app.
+## Data & privacy
 
-Keep database credentials and any other secrets out of source control. Verify that the production database is initialized and that the deployed app can read and write characters and chats.
-
-## Data and privacy
-
-- Characters, conversations, settings, personas, and lorebooks are stored in the application's PostgreSQL database.
-- Scene-image generation is designed not to persist the generated image in the database.
-- Configured AI providers receive the prompts and conversation context needed to process requests.
-- Review each provider's privacy, retention, and data-handling policies before sending sensitive content.
-- Keep database credentials and provider API keys secure.
-
-## Project status
-
-Roleplay Studio is an evolving project. Features, provider compatibility, and deployment requirements may change over time. Provider-specific capabilities may differ even when the application presents similar connection settings.
-
-## Contributing and feedback
-
-Bug reports, feature requests, and improvements can be submitted through [GitHub Issues](https://github.com/Sam-Program-362/Advance-Roleplay-Studio-/issues) and Pull Requests. When reporting a bug, include the steps to reproduce it, the expected behavior, the actual behavior, and any relevant non-sensitive error messages.
+- Characters, chats, messages, checkpoints, personas, lorebooks and your connections live in **your**
+  PostgreSQL database. Provider API keys are stored in that database (in the `connections` table) and
+  are never sent to the browser.
+- Scene images are generated on request and returned directly to the browser; they are not stored.
+- Prompts and recent conversation context are sent to whichever provider you configured. Review that
+  provider's retention and training policies before sending sensitive text.
 
 ## License
 
-No license is currently specified in this repository. Until a license is added, do not assume the source code is available for unrestricted reuse, modification, or redistribution.
+No license is currently specified in this repository. Until one is added, do not assume the source
+code may be reused, modified or redistributed.
