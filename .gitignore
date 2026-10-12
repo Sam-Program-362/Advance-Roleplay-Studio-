@@ -9,6 +9,9 @@ next-env.d.ts
 # Environment files
 .env
 .env.*
+# ...but the committed placeholder template is never ignored
+!.env.example
+!env.example
 
 # Vercel
 .vercel/

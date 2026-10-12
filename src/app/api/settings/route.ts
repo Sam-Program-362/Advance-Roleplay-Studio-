@@ -2,14 +2,12 @@ import { db } from "@/db";
 import { settings } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { errorJson, getSettings, json } from "@/lib/server";
-import { ensureSeed } from "@/lib/seed";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
     const s = await getSettings();
-    await ensureSeed();
     return json(s);
   } catch (e) {
     return errorJson(e);

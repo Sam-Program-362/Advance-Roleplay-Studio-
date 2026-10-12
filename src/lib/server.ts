@@ -141,7 +141,25 @@ export function json(data: unknown, status = 200) {
   return Response.json(data as Record<string, unknown>, { status });
 }
 
+/**
+ * Shown when the database is reachable but has no tables yet — the normal state
+ * for a brand-new (forked/self-hosted) Postgres or Neon database before the very
+ * first `npm run db:push`. Postgres reports this as undefined_table (42P01).
+ */
+export const DB_EMPTY_MESSAGE =
+  "Database is empty. Run npm run db:push once against your database.";
+
+function isMissingSchema(e: unknown): boolean {
+  const code = (e as { code?: unknown } | null)?.code;
+  if (code === "42P01" || code === "3F000") return true;
+  const message = e instanceof Error ? e.message : String(e);
+  return /relation .+ does not exist/i.test(message);
+}
+
 export function errorJson(e: unknown, status = 500) {
+  if (isMissingSchema(e)) {
+    return Response.json({ error: DB_EMPTY_MESSAGE, code: "db_empty" }, { status: 503 });
+  }
   const message = e instanceof Error ? e.message : String(e);
   return Response.json({ error: message }, { status });
 }

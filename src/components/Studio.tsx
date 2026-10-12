@@ -31,6 +31,8 @@ export default function Studio() {
   const [filterMode, setFilterMode] = useState<FilterMode>("all");
   const [toastMsg, setToastMsg] = useState<{ m: string; k: "ok" | "err" } | null>(null);
   const [booting, setBooting] = useState(true);
+  /** Blocks the whole studio when the database is unreachable or has no schema. */
+  const [bootError, setBootError] = useState<string | null>(null);
 
   const toast = useCallback((m: string, k: "ok" | "err" = "ok") => {
     setToastMsg({ m, k });
@@ -81,18 +83,17 @@ export default function Studio() {
         setCharacters(chars);
         setLorebooks(books);
 
+        // Nothing is created on load. A brand-new install opens with zero
+        // characters, chats, lorebooks and connections and writes nothing to
+        // the database until the user actually starts something.
         const stored = Number(localStorage.getItem("rp.activeChat") ?? 0);
-        let target = allChats.find((c) => c.id === stored) ?? allChats[0];
-        if (!target && chars.length > 0) {
-          target = await api.addChat({ characterId: chars[0].id, title: "Session 1", mode: "roleplay" });
-        } else if (!target) {
-          target = await api.addChat({ characterId: null, title: "Assistant", mode: "assistant" });
-        }
+        const target = allChats.find((c) => c.id === stored) ?? allChats[0];
         if (target) {
           await reloadSessions(target.characterId);
           await loadChat(target.id);
         }
       } catch (e) {
+        setBootError(e instanceof Error ? e.message : "Failed to load");
         toast(e instanceof Error ? e.message : "Failed to load", "err");
       } finally {
         setBooting(false);
@@ -226,6 +227,38 @@ export default function Studio() {
       );
     });
   }, [characters, filterMode, search]);
+
+  if (bootError) {
+    const dbEmpty = /database is empty/i.test(bootError);
+    return (
+      <div className="grid min-h-[100dvh] place-items-center bg-[#0b0e1b] px-5 py-10 text-slate-300">
+        <div className="w-full max-w-lg rounded-3xl border border-white/10 bg-[#121627] p-6 text-center shadow-2xl animate-fade-in">
+          <p className="text-4xl">{dbEmpty ? "🗄️" : "⚠️"}</p>
+          <h1 className="mt-3 text-lg font-semibold text-white">
+            {dbEmpty ? "Your database has no tables yet" : "Could not load Roleplay Studio"}
+          </h1>
+          <p className="mt-2 text-sm text-slate-400">{bootError}</p>
+          {dbEmpty && (
+            <pre className="mt-4 overflow-x-auto rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-left text-xs text-emerald-300">
+              npm run db:push
+            </pre>
+          )}
+          <p className="mt-3 text-[11px] leading-relaxed text-slate-500">
+            Point DATABASE_URL at your own PostgreSQL or Neon database (copy the committed
+            env.example to .env first), then run the command above once. This app never connects to
+            anyone else&apos;s database.
+          </p>
+          <Button
+            className="mt-4 rounded-full"
+            variant="primary"
+            onClick={() => window.location.reload()}
+          >
+            Retry
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   if (booting || !settings) {
     return (
@@ -462,10 +495,24 @@ export default function Studio() {
                 <div className="grid place-items-center rounded-3xl border border-dashed border-white/10 bg-[#121626] p-12 text-center animate-fade-in">
                   <div>
                     <p className="text-4xl">🎭</p>
-                    <p className="mt-3 text-sm font-medium text-slate-300">No characters found</p>
-                    <p className="mt-1 text-xs text-slate-500">
-                      Try clearing filters or hit &quot;+ Create Character&quot; to begin.
-                    </p>
+                    {characters.length === 0 ? (
+                      <>
+                        <p className="mt-3 text-sm font-medium text-slate-300">
+                          No characters yet
+                        </p>
+                        <p className="mt-1 text-xs text-slate-500">
+                          Create your first character, or import a Tavern card or JSON file — then pick
+                          an AI connection in Settings and start a session.
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <p className="mt-3 text-sm font-medium text-slate-300">No characters found</p>
+                        <p className="mt-1 text-xs text-slate-500">
+                          Try clearing the search box or one of the filters above.
+                        </p>
+                      </>
+                    )}
                     <Button
                       size="sm"
                       variant="primary"
@@ -521,6 +568,7 @@ export default function Studio() {
               onPatchCharacter={patchCharacter}
               onPatchSettings={patchSettings}
               onOpenSessions={() => setSessionsOpen(true)}
+              onOpenSettings={() => setView("settings")}
               toast={toast}
               headerLeft={
                 <button
@@ -642,6 +690,11 @@ export default function Studio() {
               </button>
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto space-y-1">
+              {characters.length === 0 && (
+                <p className="rounded-xl border border-dashed border-white/10 p-4 text-center text-[11px] text-slate-500">
+                  No characters yet. Create one to switch between them from here.
+                </p>
+              )}
               {characters.map((c) => (
                 <button
                   key={c.id}
