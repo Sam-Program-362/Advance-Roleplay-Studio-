@@ -37,19 +37,39 @@ export default function SettingsPanel({
 }) {
   const [tab, setTab] = useState("api");
 
+  async function logout() {
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } catch {
+      /* ignore — we send the user to the login screen either way */
+    }
+    window.location.href = "/login";
+  }
+
   return (
     <div className="flex h-full min-h-0 flex-col gap-3">
-      <div className="shrink-0">
-        <Tabs
-          active={tab}
-          onChange={setTab}
-          tabs={[
-            { id: "api", label: "Connections", icon: "🔌" },
-            { id: "prompts", label: "System Prompts", icon: "📜" },
-            { id: "persona", label: "Persona", icon: "🧑" },
-            { id: "memory", label: "Memory", icon: "🧠" },
-          ]}
-        />
+      <div className="flex shrink-0 items-center gap-2">
+        <div className="min-w-0 flex-1">
+          <Tabs
+            active={tab}
+            onChange={setTab}
+            tabs={[
+              { id: "api", label: "Connections", icon: "🔌" },
+              { id: "prompts", label: "System Prompts", icon: "📜" },
+              { id: "persona", label: "Persona", icon: "🧑" },
+              { id: "memory", label: "Memory", icon: "🧠" },
+            ]}
+          />
+        </div>
+        <Button
+          size="xs"
+          variant="danger"
+          className="shrink-0 rounded-full"
+          title="Log out of this device"
+          onClick={() => void logout()}
+        >
+          Log out
+        </Button>
       </div>
 
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
@@ -241,8 +261,12 @@ function ConnectionsTab({
   const [models, setModels] = useState<string[]>([]);
   const [probing, setProbing] = useState(false);
   const [draft, setDraft] = useState<Connection | null>(conn);
+  const [keyDraft, setKeyDraft] = useState("");
 
-  if (conn && (!draft || draft.id !== conn.id)) setDraft(conn);
+  if (conn && (!draft || draft.id !== conn.id)) {
+    setDraft(conn);
+    setKeyDraft("");
+  }
 
   async function add() {
     const c = await api.addConnection({
@@ -264,15 +288,28 @@ function ConnectionsTab({
     await reload();
   }
 
+  async function saveKey() {
+    if (!draft) return;
+    const value = keyDraft.trim();
+    if (!value) return;
+    const saved = await api.saveConnection(draft.id, { apiKey: value });
+    setKeyDraft("");
+    setDraft((d) => (d && d.id === saved.id ? { ...d, hasKey: saved.hasKey } : d));
+    await reload();
+    toast("API key saved");
+  }
+
   async function probe(action: "models" | "test") {
     if (!draft) return;
     setProbing(true);
     try {
       const res = await api.probe({
         action,
+        connectionId: draft.id,
         provider: draft.provider,
         baseUrl: draft.baseUrl,
-        apiKey: draft.apiKey,
+        // Only send a key when the user is testing one they just typed.
+        apiKey: keyDraft.trim() || undefined,
         model: draft.model,
       });
       if (action === "models") {
@@ -345,7 +382,8 @@ function ConnectionsTab({
               >
                 <span className="block truncate text-sm text-slate-100">{c.name}</span>
                 <span className="block truncate text-[11px] text-slate-500">
-                  {c.provider} · {c.model || "no model"} {c.apiKey ? "· 🔑" : ""}
+                  {c.provider} · {c.model || "no model"}
+                  {c.hasKey ? " · 🔑 key saved" : ""}
                 </span>
               </button>
               <button
@@ -403,15 +441,41 @@ function ConnectionsTab({
             hint={
               isHorde
                 ? "Leave empty for anonymous (slow) or paste your free key from aihorde.net"
-                : "Stored server-side and proxied — never exposed to the browser bundle."
+                : draft.hasKey
+                  ? "A key is saved on the server and never sent back to the browser — type a new key to replace it."
+                  : "Stored server-side and proxied — never exposed to the browser bundle."
+            }
+            action={
+              draft.hasKey ? (
+                <span className="text-[10px] font-semibold text-emerald-300">
+                  🔑 Key saved
+                </span>
+              ) : undefined
             }
           >
-            <TextInput
-              type="password"
-              value={draft.apiKey}
-              onChange={(v) => void saveDraft({ apiKey: v })}
-              placeholder={isHorde ? "0000000000 (anonymous)" : "sk-…"}
-            />
+            <div className="flex items-center gap-2">
+              <TextInput
+                type="password"
+                className="flex-1 min-w-0"
+                value={keyDraft}
+                onChange={setKeyDraft}
+                placeholder={
+                  draft.hasKey
+                    ? "Type a new key to replace"
+                    : isHorde
+                      ? "0000000000 (anonymous)"
+                      : "sk-…"
+                }
+              />
+              <Button
+                size="sm"
+                variant="soft"
+                disabled={!keyDraft.trim()}
+                onClick={() => void saveKey()}
+              >
+                Save key
+              </Button>
+            </div>
           </Field>
 
           <Field

@@ -1,7 +1,7 @@
 import { db } from "@/db";
 import { connections } from "@/db/schema";
 import { asc } from "drizzle-orm";
-import { errorJson, json } from "@/lib/server";
+import { errorJson, json, publicConnection } from "@/lib/server";
 import { providerBaseUrl } from "@/lib/defaults";
 
 export const dynamic = "force-dynamic";
@@ -9,7 +9,8 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   try {
     const rows = await db.select().from(connections).orderBy(asc(connections.id));
-    return json(rows);
+    // Never return apiKey — only whether one is saved.
+    return json(rows.map(publicConnection));
   } catch (e) {
     return errorJson(e);
   }
@@ -29,7 +30,7 @@ export async function POST(req: Request) {
         model: (body.model as string) ?? "",
       })
       .returning();
-    return json(rows[0]);
+    return json(publicConnection(rows[0]));
   } catch (e) {
     return errorJson(e);
   }

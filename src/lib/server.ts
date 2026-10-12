@@ -6,6 +6,7 @@ import {
   lorebookEntries,
   lorebooks,
   settings,
+  type Connection,
 } from "@/db/schema";
 import { eq, inArray, sql } from "drizzle-orm";
 import {
@@ -122,6 +123,18 @@ export async function getCharacterLoreEntries(characterId: number | null): Promi
     .where(inArray(lorebookEntries.lorebookId, bookIds));
   const bookMap = new Map(books.map((b) => [b.id, b]));
   return entries.map((e) => ({ ...e, book: bookMap.get(e.lorebookId) }));
+}
+
+/**
+ * A connection with the secret `apiKey` stripped out. Callers that need to know
+ * whether a key exists look at `hasKey` instead of ever receiving the value, so
+ * no API response can leak a saved provider key to the browser.
+ */
+export type PublicConnection = Omit<Connection, "apiKey"> & { hasKey: boolean };
+
+export function publicConnection(c: Connection): PublicConnection {
+  const { apiKey, ...rest } = c;
+  return { ...rest, hasKey: apiKey.trim().length > 0 };
 }
 
 export function json(data: unknown, status = 200) {
