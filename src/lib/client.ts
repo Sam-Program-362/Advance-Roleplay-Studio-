@@ -7,7 +7,8 @@ export type Connection = {
   name: string;
   provider: string;
   baseUrl: string;
-  apiKey: string;
+  /** The stored key is never sent to the browser — only whether one exists. */
+  hasKey: boolean;
   model: string;
   temperature: number;
   maxTokens: number;
@@ -134,17 +135,19 @@ export const api = {
     req<AppSettings>("/api/settings", { method: "PATCH", body: JSON.stringify(patch) }),
 
   connections: () => req<Connection[]>("/api/connections"),
-  addConnection: (body: Partial<Connection>) =>
+  addConnection: (body: Partial<Connection> & { apiKey?: string }) =>
     req<Connection>("/api/connections", { method: "POST", body: JSON.stringify(body) }),
-  saveConnection: (id: number, patch: Partial<Connection>) =>
+  saveConnection: (id: number, patch: Partial<Connection> & { apiKey?: string }) =>
     req<Connection>(`/api/connections/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   deleteConnection: (id: number) =>
     req<{ ok: true }>(`/api/connections/${id}`, { method: "DELETE" }),
   probe: (body: {
     action: "models" | "test";
+    connectionId?: number;
     provider: string;
     baseUrl: string;
-    apiKey: string;
+    /** Optional: only sent when testing a key the user just typed. */
+    apiKey?: string;
     model?: string;
   }) =>
     req<{ ok: boolean; models?: string[]; reply?: string }>("/api/connections/probe", {
