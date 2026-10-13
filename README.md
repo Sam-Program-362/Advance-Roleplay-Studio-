@@ -78,6 +78,28 @@ lorebook keywords, system prompt, creator notes) with strict per-field scope rul
 - Streaming responses (toggleable) and a Stop button; AI Horde requests can be cancelled while
   queued or processing.
 
+**Group roleplay (foundation)**
+
+- **Groups**: a named scene with world description, plot, concept, tags, an opening scene and a
+  narrator style. Cast members are *reused from your character library* — never copied — each with a
+  free-text role (Protagonist, Antagonist, Ally, Rival, NPC, or anything you type), a **depth**
+  (1–5: higher depth gets more spotlight and longer replies) and a "starts present" flag. Groups
+  can attach world lorebooks; present members also bring their own.
+- **Group sessions** open with the opening scene posted as the first narration, and a **cast bar**
+  where tapping a member toggles whether they are in the scene (saved in the chat's `group_state`).
+  Absent characters — and their Memory Cards — are never sent to the model.
+- **One generation, many voices**: the model answers in segments (`[Narrator]` or
+  `[CharacterName]`), parsed while streaming so every segment becomes its own message and bubble
+  sharing one turn id. **Regenerate and delete act on the whole turn.** Works with every provider,
+  including AI Horde (same segment format inside the Horde prompt, queue card intact).
+- **Narrator**: an independent third-person voice for present characters, the world, the
+  environment and the passing of time — never tied to a character.
+- **Memory Cards**: a shared global card (SCN / INVRM / ARC) plus a card per character
+  (STAT, TONE, REL, TRAIT, PHY, GOAL, LIMIT, LAST, L_TOPIC, L_END, KEY), pinned into every turn and
+  labelled as **higher priority than recent text**. Cards are edited by hand in the Cards panel for
+  now; automatic updating arrives next.
+- Scene images in a group chat illustrate the present cast together.
+
 **Security & PWA**
 
 - The whole app — every page, every `/api/*` route — is gated behind a single app password
@@ -135,8 +157,14 @@ npm run db:push
 ```
 
 `db:push` creates every table and column the app uses (connections, settings, personas, characters,
-lorebooks, lorebook entries, character↔lorebook links, chats, messages and checkpoints). It is
-idempotent and safe to re-run. It only ever touches the database in *your* `DATABASE_URL`.
+lorebooks, lorebook entries, character↔lorebook links, chats, messages, checkpoints, groups, group
+members, group↔lorebook links and memory cards). It is idempotent and safe to re-run. It only ever
+touches the database in *your* `DATABASE_URL`.
+
+The app also upgrades an **existing** database by itself: on the first request it runs only
+`CREATE TABLE IF NOT EXISTS` / `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements, so a database
+created by an older version picks up the group-roleplay tables and columns without a manual
+migration. It never drops, renames or rewrites anything.
 
 If you skip this step the app still starts, but every screen shows
 **"Database is empty. Run npm run db:push once against your database."** — so you can't get stuck
@@ -194,6 +222,7 @@ AI providers, hosting and database services each have their own quotas and terms
 | `npm run db:push` | Create/update the schema in `DATABASE_URL` |
 | `npm run typecheck` | TypeScript check (`tsc --noEmit`) |
 | `npm run lint` | ESLint |
+| `npm run test` | Group-roleplay unit harness (`bun scripts/test-group.ts`) |
 
 ### Project layout
 

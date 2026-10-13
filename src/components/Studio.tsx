@@ -1,15 +1,25 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { AppSettings, Character, ChatSession, Connection, FullChat, Lorebook } from "@/lib/client";
+import type {
+  AppSettings,
+  Character,
+  ChatSession,
+  Connection,
+  FullChat,
+  Group,
+  Lorebook,
+} from "@/lib/client";
 import { api, readJsonFile } from "@/lib/client";
 import ChatView from "./ChatView";
 import CharacterEditor, { emptyCharacter, type DraftCharacter } from "./CharacterEditor";
+import GroupChatView from "./GroupChatView";
+import GroupPanel from "./GroupPanel";
 import LorebookPanel from "./LorebookPanel";
 import SettingsPanel from "./SettingsPanel";
 import { Avatar, Button, Modal, Toast, cx } from "./ui";
 
-type View = "characters" | "chat" | "editor" | "lore" | "settings";
+type View = "characters" | "chat" | "editor" | "lore" | "settings" | "groups";
 type FilterMode = "all" | "sfw" | "nsfw";
 
 const JSON_ACCEPT =
@@ -21,6 +31,9 @@ export default function Studio() {
   const [characters, setCharacters] = useState<Character[]>([]);
   const [lorebooks, setLorebooks] = useState<Lorebook[]>([]);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [groups, setGroups] = useState<Group[]>([]);
+  /** Set (from a group chat) to open the Groups tab straight in the editor. */
+  const [groupEditTarget, setGroupEditTarget] = useState<Group | null>(null);
   const [chat, setChat] = useState<FullChat | null>(null);
   const [view, setView] = useState<View>("characters");
   const [draft, setDraft] = useState<DraftCharacter | null>(null);
@@ -52,8 +65,14 @@ export default function Studio() {
 
   const reloadSessions = useCallback(async (characterId: number | null) => {
     const list = await api.chats(characterId);
-    setSessions(list);
-    return list;
+    // Group sessions never belong to a character's (or the assistant's) list.
+    const scoped = list.filter((c) => !c.groupId);
+    setSessions(scoped);
+    return scoped;
+  }, []);
+
+  const reloadGroups = useCallback(async () => {
+    setGroups(await api.groups());
   }, []);
 
   const reloadCharacters = useCallback(async () => {
@@ -71,17 +90,19 @@ export default function Studio() {
   useEffect(() => {
     (async () => {
       try {
-        const [s, conns, chars, books, allChats] = await Promise.all([
+        const [s, conns, chars, books, allChats, allGroups] = await Promise.all([
           api.settings(),
           api.connections(),
           api.characters(),
           api.lorebooks(),
           api.chats(),
+          api.groups(),
         ]);
         setSettings(s);
         setConnections(conns);
         setCharacters(chars);
         setLorebooks(books);
+        setGroups(allGroups);
 
         // Nothing is created on load. A brand-new install opens with zero
         // characters, chats, lorebooks and connections and writes nothing to
@@ -126,6 +147,11 @@ export default function Studio() {
     [characters, chat?.characterId],
   );
 
+  const activeGroup = useMemo(
+    () => groups.find((g) => g.id === chat?.groupId) ?? null,
+    [groups, chat?.groupId],
+  );
+
   const reloadChat = useCallback(async () => {
     if (chat) await loadChat(chat.id);
   }, [chat, loadChat]);
@@ -148,8 +174,20 @@ export default function Studio() {
     setDrawer(false);
   }
 
+  /** Starts a group session (opening scene becomes the first narration). */
+  async function startGroupChat(g: Group) {
+    try {
+      const created = await api.addChat({ groupId: g.id, title: g.name });
+      await loadChat(created.id);
+      setView("chat");
+      setDrawer(false);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not start the group session", "err");
+    }
+  }
+
   async function newSession(c: Character | null, greetingIndex = 0) {
-    const existing = c ? await api.chats(c.id) : await api.chats(null);
+    const existing = (c ? await api.chats(c.id) : await api.chats(null)).filter((x) => !x.groupId);
     const s = await api.addChat({
       characterId: c?.id ?? null,
       title: `Session ${existing.length + 1}`,
@@ -166,7 +204,7 @@ export default function Studio() {
 
   async function startAssistant() {
     const list = await api.chats(null);
-    const assistant = list.find((c) => c.characterId === null);
+    const assistant = list.find((c) => c.characterId === null && !c.groupId);
     if (assistant) {
       await reloadSessions(null);
       await loadChat(assistant.id);
@@ -334,7 +372,7 @@ export default function Studio() {
         </button>
       </div>
 
-      {/* Row 2: Navigation Pills Bar (Characters | Chat | Lorebooks) */}
+      {/* Row 2: Navigation Pills Bar (Characters | Chat | Lorebooks | Groups) */}
       <div className="flex items-center rounded-full bg-[#101424] border border-white/5 p-1 max-w-lg mx-auto shadow-inner">
         <button
           onClick={() => setView("characters")}
@@ -346,7 +384,7 @@ export default function Studio() {
           )}
         >
           <span>👥</span>
-          <span>Characters</span>
+          <span className="hidden sm:inline">Characters</span>
         </button>
         <button
           onClick={() => {
@@ -361,7 +399,7 @@ export default function Studio() {
           )}
         >
           <span>💬</span>
-          <span>Chat</span>
+          <span className="hidden sm:inline">Chat</span>
         </button>
         <button
           onClick={() => setView("lore")}
@@ -373,7 +411,23 @@ export default function Studio() {
           )}
         >
           <span>📖</span>
-          <span>Lorebooks</span>
+          <span className="hidden sm:inline">Lorebooks</span>
+        </button>
+        <button
+          onClick={() => {
+            setGroupEditTarget(null);
+            setView("groups");
+          }}
+          className={cx(
+            "flex-1 flex items-center justify-center gap-1.5 rounded-full py-1.5 px-3 text-xs font-semibold transition-all duration-200 active:scale-98",
+            view === "groups" || (view === "chat" && !!chat?.groupId)
+              ? "bg-violet-600 text-white shadow-md shadow-violet-600/35"
+              : "text-slate-400 hover:text-slate-200",
+          )}
+          title="Group roleplay"
+        >
+          <span>🎭</span>
+          <span className="hidden sm:inline">Groups</span>
         </button>
       </div>
     </header>
@@ -555,9 +609,44 @@ export default function Studio() {
           </div>
         )}
 
-        {/* VIEW 2: Chat View */}
+        {/* VIEW 2: Chat View (group sessions get their own view) */}
         {view === "chat" &&
-          (chat ? (
+          (chat && chat.groupId ? (
+            activeGroup ? (
+              <GroupChatView
+                key={chat.id}
+                chat={chat}
+                group={activeGroup}
+                settings={settings}
+                connections={connections}
+                onReload={reloadChat}
+                onPatchSettings={patchSettings}
+                onOpenSession={loadChat}
+                onBack={() => setView("groups")}
+                onOpenGroup={() => {
+                  setGroupEditTarget(activeGroup);
+                  setView("groups");
+                }}
+                toast={toast}
+              />
+            ) : (
+              <div className="grid flex-1 place-items-center p-6 text-center animate-fade-in">
+                <div>
+                  <p className="text-3xl">🎭</p>
+                  <p className="mt-2 text-sm text-slate-400">
+                    This group no longer exists. Its sessions were removed with it.
+                  </p>
+                  <Button
+                    className="mt-3 rounded-full"
+                    variant="primary"
+                    onClick={() => setView("groups")}
+                  >
+                    Go to Groups
+                  </Button>
+                </div>
+              </div>
+            )
+          ) : chat ? (
             <ChatView
               key={chat.id}
               chat={chat}
@@ -628,7 +717,38 @@ export default function Studio() {
           </div>
         )}
 
-        {/* VIEW 4: Lorebooks */}
+        {/* VIEW 4: Groups (group roleplay) */}
+        {view === "groups" && (
+          <div className="flex h-full min-h-0 flex-col animate-fade-in">
+            <header className="flex shrink-0 items-center justify-between gap-2 border-b border-white/10 bg-[#0f1424] px-4 py-2.5">
+              <h2 className="text-sm font-semibold text-white">🎭 Group Roleplay</h2>
+              <Button
+                size="xs"
+                variant="soft"
+                className="rounded-full"
+                onClick={() => setView("characters")}
+              >
+                ← Characters
+              </Button>
+            </header>
+            <div className="min-h-0 flex-1 overflow-hidden">
+              <div className="mx-auto h-full min-h-0 w-full max-w-4xl">
+                <GroupPanel
+                  key={groupEditTarget ? `edit-${groupEditTarget.id}` : "groups-list"}
+                  groups={groups}
+                  characters={characters}
+                  lorebooks={lorebooks}
+                  reload={reloadGroups}
+                  toast={toast}
+                  onStartChat={(g) => void startGroupChat(g)}
+                  initialGroup={groupEditTarget}
+                />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* VIEW 5: Lorebooks */}
         {view === "lore" && (
           <div className="flex h-full min-h-0 flex-col animate-fade-in">
             <header className="flex shrink-0 items-center justify-between gap-2 border-b border-white/10 bg-[#0f1424] px-4 py-2.5">
@@ -651,7 +771,7 @@ export default function Studio() {
           </div>
         )}
 
-        {/* VIEW 5: Settings */}
+        {/* VIEW 6: Settings */}
         {view === "settings" && (
           <div className="flex h-full min-h-0 flex-col animate-fade-in">
             <header className="flex shrink-0 items-center justify-between gap-2 border-b border-white/10 bg-[#0f1424] px-4 py-2.5">

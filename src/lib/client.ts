@@ -1,6 +1,7 @@
 "use client";
 
 import type { HordeStatus } from "./llm";
+import type { GroupSegment } from "./groupSegments";
 
 export type Connection = {
   id: number;
@@ -89,6 +90,10 @@ export type Lorebook = {
 export type ChatSession = {
   id: number;
   characterId: number | null;
+  /** Set for group sessions. */
+  groupId?: number | null;
+  /** Group sessions: which characters are currently in the scene. */
+  groupState?: { present?: number[] } | null;
   title: string;
   mode: string;
   summary: string;
@@ -97,8 +102,74 @@ export type ChatSession = {
   updatedAt: string;
 };
 
-export type ChatMessage = { id: number; chatId: number; role: string; content: string };
+export type ChatMessage = {
+  id: number;
+  chatId: number;
+  role: string;
+  content: string;
+  /** Group chats: the character that spoke (null = narrator / user). */
+  speakerId?: number | null;
+  /** Group chats: "narration" | "character" | "". */
+  kind?: string;
+  /** Group chats: every segment of one generation shares this id. */
+  turnId?: string | null;
+};
 export type Checkpoint = { id: number; chatId: number; messageId: number; name: string };
+
+/* ---------------- group roleplay ---------------- */
+
+export type GroupMemberView = {
+  id: number;
+  groupId: number;
+  characterId: number;
+  role: string;
+  depth: number;
+  startsPresent: boolean;
+  sortOrder: number;
+  /** Display fields read from the character library (never a copy). */
+  name: string;
+  avatar: string;
+  nsfw: boolean;
+  tags: string[];
+};
+
+export type Group = {
+  id: number;
+  name: string;
+  avatar: string;
+  worldDescription: string;
+  plot: string;
+  concept: string;
+  tags: string[];
+  openingScene: string;
+  narratorStyle: string;
+  createdAt?: string;
+  updatedAt?: string;
+  members: GroupMemberView[];
+  lorebookIds: number[];
+};
+
+/** What the editor sends when saving a group's cast. */
+export type GroupMemberInput = {
+  characterId: number;
+  role: string;
+  depth: number;
+  startsPresent: boolean;
+  sortOrder?: number;
+};
+
+export type GroupInput = Partial<Omit<Group, "members" | "lorebookIds">> & {
+  members?: GroupMemberInput[];
+  lorebookIds?: number[];
+};
+
+export type MemoryCard = {
+  id: number;
+  chatId: number;
+  subject: string;
+  data: Record<string, string>;
+  updatedAt?: string;
+};
 
 export type Persona = {
   id: number;
@@ -181,9 +252,15 @@ export const api = {
     req<ChatSession[]>(
       characterId == null ? "/api/chats" : `/api/chats?characterId=${characterId}`,
     ),
+  groupChats: (groupId: number) => req<ChatSession[]>(`/api/chats?groupId=${groupId}`),
   chat: (id: number) => req<FullChat>(`/api/chats/${id}`),
-  addChat: (body: { characterId?: number | null; title?: string; mode?: string; greetingIndex?: number }) =>
-    req<ChatSession>("/api/chats", { method: "POST", body: JSON.stringify(body) }),
+  addChat: (body: {
+    characterId?: number | null;
+    groupId?: number | null;
+    title?: string;
+    mode?: string;
+    greetingIndex?: number;
+  }) => req<ChatSession>("/api/chats", { method: "POST", body: JSON.stringify(body) }),
   saveChat: (id: number, patch: Partial<ChatSession>) =>
     req<ChatSession>(`/api/chats/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   deleteChat: (id: number) => req<{ ok: true }>(`/api/chats/${id}`, { method: "DELETE" }),
@@ -195,8 +272,26 @@ export const api = {
     }),
   saveMessage: (id: number, content: string) =>
     req<ChatMessage>(`/api/messages/${id}`, { method: "PATCH", body: JSON.stringify({ content }) }),
-  deleteMessage: (id: number, cascade = false) =>
-    req<{ ok: true }>(`/api/messages/${id}${cascade ? "?cascade=1" : ""}`, { method: "DELETE" }),
+  deleteMessage: (id: number, cascade = false, wholeTurn = false) =>
+    req<{ ok: true }>(
+      `/api/messages/${id}${wholeTurn ? "?turn=1" : cascade ? "?cascade=1" : ""}`,
+      { method: "DELETE" },
+    ),
+
+  groups: () => req<Group[]>("/api/groups"),
+  group: (id: number) => req<Group>(`/api/groups/${id}`),
+  addGroup: (body: GroupInput) =>
+    req<Group>("/api/groups", { method: "POST", body: JSON.stringify(body) }),
+  saveGroup: (id: number, patch: GroupInput) =>
+    req<Group>(`/api/groups/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  deleteGroup: (id: number) => req<{ ok: true }>(`/api/groups/${id}`, { method: "DELETE" }),
+
+  memoryCards: (chatId: number) => req<MemoryCard[]>(`/api/memory-cards?chatId=${chatId}`),
+  saveMemoryCard: (chatId: number, subject: string, data: Record<string, string>) =>
+    req<MemoryCard>("/api/memory-cards", {
+      method: "PUT",
+      body: JSON.stringify({ chatId, subject, data }),
+    }),
 
   addCheckpoint: (chatId: number, messageId: number, name?: string) =>
     req<Checkpoint>(`/api/chats/${chatId}/checkpoints`, {
@@ -267,10 +362,12 @@ export const api = {
 export type GenerateEvents = {
   onMeta?: (m: { stats: Record<string, unknown>; model: string }) => void;
   onDelta?: (t: string) => void;
-  onDone?: (d: { message: ChatMessage; mode: string }) => void;
+  onDone?: (d: { message?: ChatMessage; messages?: ChatMessage[]; turnId?: string; mode: string }) => void;
   onError?: (msg: string) => void;
   /** AI Horde only — queue status pushed on every poll. */
   onHorde?: (s: HordeStatus) => void;
+  /** Group chats only — the full segment list for the turn so far. */
+  onSegments?: (segments: GroupSegment[]) => void;
 };
 
 export async function generate(
@@ -292,6 +389,8 @@ export async function generate(
       const j = JSON.parse(text) as {
         error?: string;
         message?: ChatMessage;
+        messages?: ChatMessage[];
+        segments?: GroupSegment[];
         mode?: string;
         text?: string;
       };
@@ -299,9 +398,10 @@ export async function generate(
         ev.onError?.(j.error ?? "Generation failed");
         return;
       }
-      if (j.message) {
-        ev.onDelta?.(j.message.content);
-        ev.onDone?.({ message: j.message, mode: j.mode ?? "insert" });
+      if (j.segments) ev.onSegments?.(j.segments);
+      if (j.message) ev.onDelta?.(j.message.content);
+      if (j.message || j.messages) {
+        ev.onDone?.({ message: j.message, messages: j.messages, mode: j.mode ?? "insert" });
       }
       return;
     } catch {
@@ -332,6 +432,8 @@ export async function generate(
       }
       if (evName === "meta") ev.onMeta?.(data as never);
       else if (evName === "delta") ev.onDelta?.(String(data.text ?? ""));
+      else if (evName === "segments")
+        ev.onSegments?.((data.segments as GroupSegment[]) ?? []);
       else if (evName === "done") ev.onDone?.(data as never);
       else if (evName === "horde") ev.onHorde?.(data as unknown as HordeStatus);
       else if (evName === "error") ev.onError?.(String(data.message ?? "error"));

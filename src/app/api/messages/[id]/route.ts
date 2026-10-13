@@ -28,8 +28,16 @@ export async function DELETE(req: Request, ctx: Ctx) {
     const mid = Number(id);
     const url = new URL(req.url);
     const cascade = url.searchParams.get("cascade") === "1";
+    /** Group chats: delete the whole generation (every segment of this turn). */
+    const wholeTurn = url.searchParams.get("turn") === "1";
     const row = (await db.select().from(messages).where(eq(messages.id, mid)).limit(1))[0];
     if (!row) return json({ ok: true });
+    if (wholeTurn && row.turnId) {
+      await db
+        .delete(messages)
+        .where(and(eq(messages.chatId, row.chatId), eq(messages.turnId, row.turnId)));
+      return json({ ok: true });
+    }
     if (cascade) {
       // Revert: delete this message and everything after it in the same chat
       await db

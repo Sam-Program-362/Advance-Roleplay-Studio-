@@ -1,7 +1,15 @@
 import { db } from "@/db";
 import { chats, messages } from "@/db/schema";
 import { asc, eq } from "drizzle-orm";
-import { errorJson, getActiveConnection, getCharacter, getSettings } from "@/lib/server";
+import {
+  errorJson,
+  getActiveConnection,
+  getCharacter,
+  getGroup,
+  getGroupCast,
+  getSettings,
+  presentCharacterIds,
+} from "@/lib/server";
 import { providerKind } from "@/lib/defaults";
 
 export const dynamic = "force-dynamic";
@@ -88,6 +96,64 @@ function buildScenePrompt(opts: {
   if (!nsfw) {
     lines.push("Keep the depiction tasteful and non-explicit.");
   }
+
+  return lines.join("\n\n");
+}
+
+/**
+ * Group scene: one illustration of the PRESENT cast together, driven by their
+ * profiles and the group's world, so the picture shows who is actually in the
+ * scene rather than a single character.
+ */
+function buildGroupScenePrompt(opts: {
+  groupName: string;
+  worldDescription: string;
+  plot: string;
+  concept: string;
+  cast: { name: string; role: string; personality: string; scenario: string }[];
+  personaName: string;
+  personaDescription: string;
+  turns: { speaker: string; content: string }[];
+  nsfw: boolean;
+}) {
+  const { groupName, cast, turns, nsfw } = opts;
+  const lines: string[] = [];
+
+  lines.push(
+    `Create a vivid, high-quality illustration of the current moment in the group story "${clip(groupName, 80)}".`,
+  );
+
+  const names = cast.map((c) => c.name);
+  lines.push(
+    `Depict ALL of these characters TOGETHER in one single frame: ${names.join(", ")}.`,
+  );
+  for (const c of cast) {
+    const detail = [c.personality, c.scenario].filter((v) => v?.trim()).join(" ");
+    lines.push(`- ${c.name}${c.role?.trim() ? ` (${c.role.trim()})` : ""}: ${clip(detail, 700)}`);
+  }
+  lines.push(
+    "Show them as a group in a shared space: relative positions and distances, who is looking at whom, posture, expressions and body language consistent with each description above.",
+  );
+
+  if (opts.concept?.trim()) lines.push(`Concept: ${clip(opts.concept, 300)}`);
+  if (opts.worldDescription?.trim()) lines.push(`World: ${clip(opts.worldDescription, 600)}`);
+  if (opts.plot?.trim()) lines.push(`Current story: ${clip(opts.plot, 500)}`);
+  if (opts.personaDescription?.trim()) {
+    lines.push(`Roleplayer persona (${opts.personaName}): ${clip(opts.personaDescription, 300)}`);
+  }
+
+  if (turns.length) {
+    lines.push(
+      "The scene to depict (most recent beats):",
+      turns.map((t) => `${t.speaker}: ${clip(t.content, 400)}`).join("\n"),
+      "Compose the exact moment these beats are in, cinematically, with consistent appearances.",
+    );
+  }
+
+  lines.push(
+    "Do not render any text, letters, captions, speech bubbles, logos or watermarks in the image.",
+  );
+  if (!nsfw) lines.push("Keep the depiction tasteful and non-explicit.");
 
   return lines.join("\n\n");
 }
@@ -275,30 +341,65 @@ export async function POST(req: Request) {
       );
     }
 
-    const character = chat.characterId ? await getCharacter(chat.characterId) : null;
-
-    // Inject the last ~3 turns (2-3 user/assistant exchanges) of the scene.
     const recent = await db
       .select()
       .from(messages)
       .where(eq(messages.chatId, chat.id))
       .orderBy(asc(messages.id));
-    const turns = recent.slice(-6).map((m) => ({ role: m.role, content: m.content }));
 
-    const prompt = buildScenePrompt({
-      characterName: character?.name?.trim() || "Assistant",
-      character: character
-        ? {
-            personality: character.personality,
-            scenario: character.scenario,
-            contextBlock: character.contextBlock,
-          }
-        : null,
-      personaName: s.personaName || "User",
-      personaDescription: s.personaDescription || "",
-      turns,
-      nsfw: Boolean(s.nsfwEnabled || character?.nsfw),
-    });
+    let prompt: string;
+
+    if (chat.groupId) {
+      // Group chat: illustrate everyone who is present, together.
+      const group = await getGroup(chat.groupId);
+      const cast = await getGroupCast(chat.groupId);
+      const present = cast.filter((c) =>
+        presentCharacterIds(chat.groupState, cast).includes(c.character.id),
+      );
+      const nameById = new Map(cast.map((c) => [c.character.id, c.character.name]));
+      prompt = buildGroupScenePrompt({
+        groupName: group?.name ?? "Group story",
+        worldDescription: group?.worldDescription ?? "",
+        plot: group?.plot ?? "",
+        concept: group?.concept ?? "",
+        cast: present.map(({ member, character }) => ({
+          name: character.name,
+          role: member.role,
+          personality: character.personality,
+          scenario: character.scenario,
+        })),
+        personaName: s.personaName || "User",
+        personaDescription: s.personaDescription || "",
+        turns: recent.slice(-6).map((m) => ({
+          speaker:
+            m.role === "user"
+              ? s.personaName || "User"
+              : m.kind === "narration"
+                ? "Narration"
+                : m.speakerId
+                  ? (nameById.get(m.speakerId) ?? "Character")
+                  : "Character",
+          content: m.content,
+        })),
+        nsfw: Boolean(s.nsfwEnabled || present.some((c) => c.character.nsfw)),
+      });
+    } else {
+      const character = chat.characterId ? await getCharacter(chat.characterId) : null;
+      prompt = buildScenePrompt({
+        characterName: character?.name?.trim() || "Assistant",
+        character: character
+          ? {
+              personality: character.personality,
+              scenario: character.scenario,
+              contextBlock: character.contextBlock,
+            }
+          : null,
+        personaName: s.personaName || "User",
+        personaDescription: s.personaDescription || "",
+        turns: recent.slice(-6).map((m) => ({ role: m.role, content: m.content })),
+        nsfw: Boolean(s.nsfwEnabled || character?.nsfw),
+      });
+    }
 
     const kind = providerKind(conn.provider);
     if (kind === "anthropic") {

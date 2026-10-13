@@ -1,11 +1,22 @@
 import { db } from "@/db";
-import { checkpoints, chats, messages } from "@/db/schema";
+import { checkpoints, chats, memoryCards, messages, type GroupState } from "@/db/schema";
 import { asc, eq } from "drizzle-orm";
 import { errorJson, json } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
 
 type Ctx = { params: Promise<{ id: string }> };
+
+/** Only ever store a clean list of character ids as the group's presence state. */
+function cleanGroupState(raw: unknown): GroupState | null {
+  if (!raw || typeof raw !== "object") return null;
+  const value = (raw as { present?: unknown }).present;
+  if (!Array.isArray(value)) return {};
+  const present = [
+    ...new Set(value.map((v) => Number(v)).filter((n) => Number.isFinite(n) && n > 0)),
+  ];
+  return { present };
+}
 
 export async function GET(_req: Request, ctx: Ctx) {
   try {
@@ -37,6 +48,10 @@ export async function PATCH(req: Request, ctx: Ctx) {
     for (const k of ["title", "summary", "summaryInstructions", "summarizedUpTo", "mode"]) {
       if (k in body) patch[k] = body[k];
     }
+    if ("groupState" in body) {
+      const state = cleanGroupState(body.groupState);
+      if (state) patch.groupState = state;
+    }
     const rows = await db
       .update(chats)
       .set(patch)
@@ -54,6 +69,7 @@ export async function DELETE(_req: Request, ctx: Ctx) {
     const cid = Number(id);
     await db.delete(messages).where(eq(messages.chatId, cid));
     await db.delete(checkpoints).where(eq(checkpoints.chatId, cid));
+    await db.delete(memoryCards).where(eq(memoryCards.chatId, cid));
     await db.delete(chats).where(eq(chats.id, cid));
     return json({ ok: true });
   } catch (e) {
