@@ -128,12 +128,73 @@ export const characterLorebooks = pgTable("character_lorebooks", {
   lorebookId: integer("lorebook_id").notNull(),
 });
 
+/**
+ * Per-chat group state. `present` is the set of character ids currently in the
+ * scene; an absent member is never sent to the model. An empty object means
+ * "not configured yet", in which case every member with `startsPresent` is in.
+ * PR 2 will add the director state to this same JSON blob.
+ */
+export type GroupState = { present?: number[] };
+
+/* ------------------------------------------------------------------ */
+/* Groups — multi-character roleplay (Group Roleplay)                  */
+/* ------------------------------------------------------------------ */
+export const groups = pgTable("groups", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull().default("New Group"),
+  avatar: text("avatar").notNull().default(""), // data URL
+  worldDescription: text("world_description").notNull().default(""),
+  plot: text("plot").notNull().default(""),
+  concept: text("concept").notNull().default(""),
+  tags: jsonb("tags").$type<string[]>().notNull().default([]),
+  openingScene: text("opening_scene").notNull().default(""),
+  narratorStyle: text("narrator_style").notNull().default(""),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+/** One cast member of a group. Characters are always reused from the library. */
+export const groupMembers = pgTable("group_members", {
+  id: serial("id").primaryKey(),
+  groupId: integer("group_id").notNull(),
+  characterId: integer("character_id").notNull(),
+  /** Free text: protagonist, antagonist, ally, rival, NPC, anything else. */
+  role: text("role").notNull().default(""),
+  /** 1–5. Higher depth = more spotlight, more frequent and longer replies. */
+  depth: integer("depth").notNull().default(3),
+  startsPresent: boolean("starts_present").notNull().default(true),
+  sortOrder: integer("sort_order").notNull().default(0),
+});
+
+/** Many-to-many: world lorebook attached to a group. */
+export const groupLorebooks = pgTable("group_lorebooks", {
+  id: serial("id").primaryKey(),
+  groupId: integer("group_id").notNull(),
+  lorebookId: integer("lorebook_id").notNull(),
+});
+
+/**
+ * Compressed per-chat memory. `subject` is "global" for the shared world card
+ * or a character id (as text) for that character's own card.
+ */
+export const memoryCards = pgTable("memory_cards", {
+  id: serial("id").primaryKey(),
+  chatId: integer("chat_id").notNull(),
+  subject: text("subject").notNull().default("global"),
+  data: jsonb("data").$type<Record<string, string>>().notNull().default({}),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
 /* ------------------------------------------------------------------ */
 /* Chat sessions + messages                                            */
 /* ------------------------------------------------------------------ */
 export const chats = pgTable("chats", {
   id: serial("id").primaryKey(),
-  characterId: integer("character_id"), // null = assistant chat
+  characterId: integer("character_id"), // null = assistant or group chat
+  /** Set when this chat is a group session (group roleplay). */
+  groupId: integer("group_id"),
+  /** Group sessions only: { present: number[] } — who is in the scene right now. */
+  groupState: jsonb("group_state").$type<GroupState>().notNull().default({}),
   title: text("title").notNull().default("New Session"),
   mode: text("mode").notNull().default("roleplay"),
   summary: text("summary").notNull().default(""),
@@ -148,6 +209,12 @@ export const messages = pgTable("messages", {
   chatId: integer("chat_id").notNull(),
   role: text("role").notNull(), // user | assistant | system
   content: text("content").notNull().default(""),
+  /** Group chats: the group_member character id that spoke (null = narrator). */
+  speakerId: integer("speaker_id"),
+  /** Group chats: "narration" | "character" | "" (unset = normal message). */
+  kind: text("kind").notNull().default(""),
+  /** Group chats: every message of one generation shares this id. */
+  turnId: text("turn_id"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -165,6 +232,10 @@ export type Persona = typeof personas.$inferSelect;
 export type Character = typeof characters.$inferSelect;
 export type Lorebook = typeof lorebooks.$inferSelect;
 export type LorebookEntry = typeof lorebookEntries.$inferSelect;
+export type Group = typeof groups.$inferSelect;
+export type GroupMember = typeof groupMembers.$inferSelect;
+export type GroupLorebook = typeof groupLorebooks.$inferSelect;
+export type MemoryCard = typeof memoryCards.$inferSelect;
 export type Chat = typeof chats.$inferSelect;
 export type Message = typeof messages.$inferSelect;
 export type Checkpoint = typeof checkpoints.$inferSelect;
