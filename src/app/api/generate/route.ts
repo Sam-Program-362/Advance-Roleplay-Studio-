@@ -1,5 +1,5 @@
 import { db } from "@/db";
-import { chats, messages, type Connection, type GroupState } from "@/db/schema";
+import { chats, messages, type Connection, type GroupState, type Message } from "@/db/schema";
 import { and, asc, eq } from "drizzle-orm";
 import {
   errorJson,
@@ -27,9 +27,11 @@ import {
   buildPrompt,
   scanLorebook,
   type BuildArgs,
+  type BuiltPrompt,
   type GroupBuildArgs,
   type GroupMemberArgs,
 } from "@/lib/prompt";
+import { EMPTY_GROUP_TURN, runGroupTurn, type CommitArgs } from "@/lib/groupTurn";
 import { GLOBAL_CARD_SUBJECT } from "@/lib/groupCards";
 import {
   NARRATOR_LABEL,
@@ -292,13 +294,15 @@ export async function POST(req: Request) {
 
 type SettingsRow = Awaited<ReturnType<typeof getSettings>>;
 
-const EMPTY_GROUP_REPLY =
-  "The model returned an empty response. Try again, or pick a different model in Settings → Connections.";
-
 /**
  * Runs one group turn: builds the group prompt from the PRESENT cast only,
  * streams it through the segment parser and stores every segment as its own
- * message. Regenerate replaces the whole previous turn (all of its segments).
+ * message.
+ *
+ * Regenerate replaces the whole previous turn (all of its segments), but only
+ * once the replacement exists — see `runGroupTurn`. The planning, generation
+ * and commit order is shared by the streaming and non-streaming paths, so a
+ * failure or a Stop can never leave the transcript without its previous turn.
  */
 async function generateGroupTurn(opts: {
   signal: AbortSignal;
@@ -341,30 +345,14 @@ async function generateGroupTurn(opts: {
     });
   }
 
-  let history = await db
+  // The transcript as it stands, INCLUDING the turn a regenerate would
+  // replace. Nothing is deleted here: `runGroupTurn` only removes the old turn
+  // inside the commit step, once the replacement actually exists.
+  const stored = await db
     .select()
     .from(messages)
     .where(eq(messages.chatId, chatId))
     .orderBy(asc(messages.id));
-
-  // Regenerate drops the entire previous turn, not just its last segment.
-  if (action === "regenerate") {
-    const last = history[history.length - 1];
-    if (last && last.role === "assistant") {
-      if (last.turnId) {
-        await db
-          .delete(messages)
-          .where(and(eq(messages.chatId, chatId), eq(messages.turnId, last.turnId)));
-      } else {
-        await db.delete(messages).where(eq(messages.id, last.id));
-      }
-      history = await db
-        .select()
-        .from(messages)
-        .where(eq(messages.chatId, chatId))
-        .orderBy(asc(messages.id));
-    }
-  }
 
   const cards = indexMemoryCards(await getMemoryCards(chatId));
   const globalCard = cards.get(GLOBAL_CARD_SUBJECT) ?? {};
@@ -386,100 +374,146 @@ async function generateGroupTurn(opts: {
   const allLore = await getGroupLoreEntries(groupId, presentIds);
   const scanDepth = Math.max(4, ...allLore.map((e) => e.book?.scanDepth ?? 8));
   const budget = Math.max(400, ...allLore.map((e) => e.book?.tokenBudget ?? 1200));
-  const recentText = history
-    .slice(-scanDepth)
-    .map((m) => m.content)
-    .join("\n");
-  const activeLore = scanLorebook(allLore, recentText, budget);
 
-  const promptArgs: GroupBuildArgs = {
-    group: {
-      name: group.name,
-      worldDescription: group.worldDescription,
-      plot: group.plot,
-      concept: group.concept,
-      tags: group.tags ?? [],
-      narratorStyle: group.narratorStyle,
-    },
-    members,
-    personaName: s.personaName,
-    personaDescription: s.personaDescription,
-    nsfw: s.nsfwEnabled || presentCast.some((c) => c.character.nsfw),
-    nsfwPrompt: s.nsfwPrompt,
-    summary: opts.summary,
-    globalCard,
-    history: history.map((m) => ({
-      role: m.role,
-      content: m.content,
-      speaker:
-        m.role === "user"
-          ? null
-          : m.kind === "narration"
-            ? NARRATOR_LABEL
-            : m.speakerId
-              ? (nameById.get(m.speakerId) ?? null)
-              : null,
-    })),
-    lorebookEntries: activeLore,
-    lorebookBudget: budget,
-    contextSize: conn.contextSize,
-    maxTokens: conn.maxTokens,
-  };
-
-  const built = isHorde ? buildHordeGroupPrompt(promptArgs) : buildGroupPrompt(promptArgs);
   const speakers: SpeakerRef[] = presentCast.map((c) => ({
     id: c.character.id,
     name: c.character.name,
   }));
   const cfg = toLlmConfig(conn);
   const turnId = `g${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  const hordeOpts: RunOptions | undefined = isHorde
-    ? { signal: opts.signal, stopSequence: built.stopSequence, timeoutMs: HORDE_TIMEOUT_MS }
-    : undefined;
 
-  const saveTurn = async (segments: GroupSegment[]) => {
-    const rows = await db
-      .insert(messages)
-      .values(
-        segments.map((seg) => ({
-          chatId,
-          role: "assistant",
-          content: seg.text,
-          speakerId: seg.kind === "character" ? seg.speakerId : null,
-          kind: seg.kind,
-          turnId,
-        })),
-      )
-      .returning();
-    await db.update(chats).set({ updatedAt: new Date() }).where(eq(chats.id, chatId));
-    return rows;
+  /**
+   * Builds the prompt from `history`, which for a regenerate already excludes
+   * the turn being replaced, so the model never sees the text it is replacing.
+   */
+  let lastStats: BuiltPrompt["stats"] | null = null;
+  const prepare = (history: Message[]) => {
+    const recentText = history
+      .slice(-scanDepth)
+      .map((m) => m.content)
+      .join("\n");
+    const activeLore = scanLorebook(allLore, recentText, budget);
+
+    const promptArgs: GroupBuildArgs = {
+      group: {
+        name: group.name,
+        worldDescription: group.worldDescription,
+        plot: group.plot,
+        concept: group.concept,
+        tags: group.tags ?? [],
+        narratorStyle: group.narratorStyle,
+      },
+      members,
+      personaName: s.personaName,
+      personaDescription: s.personaDescription,
+      nsfw: s.nsfwEnabled || presentCast.some((c) => c.character.nsfw),
+      nsfwPrompt: s.nsfwPrompt,
+      summary: opts.summary,
+      globalCard,
+      history: history.map((m) => ({
+        role: m.role,
+        content: m.content,
+        speaker:
+          m.role === "user"
+            ? null
+            : m.kind === "narration"
+              ? NARRATOR_LABEL
+              : m.speakerId
+                ? (nameById.get(m.speakerId) ?? null)
+                : null,
+      })),
+      lorebookEntries: activeLore,
+      lorebookBudget: budget,
+      contextSize: conn.contextSize,
+      maxTokens: conn.maxTokens,
+    };
+
+    const built = isHorde ? buildHordeGroupPrompt(promptArgs) : buildGroupPrompt(promptArgs);
+    lastStats = built.stats;
+    return built;
   };
+
+  /**
+   * The ONLY place the previous turn is removed — inside the same transaction
+   * that inserts the new segments. If generation threw, was aborted or came
+   * back empty, this never runs and the old turn stays exactly as it was.
+   */
+  const commit = (args: CommitArgs<GroupSegment>): Promise<Message[]> =>
+    db.transaction(async (tx) => {
+      if (args.replaceTurnId) {
+        await tx
+          .delete(messages)
+          .where(and(eq(messages.chatId, chatId), eq(messages.turnId, args.replaceTurnId)));
+      } else if (args.replaceMessageId) {
+        await tx.delete(messages).where(eq(messages.id, args.replaceMessageId));
+      }
+
+      const rows = await tx
+        .insert(messages)
+        .values(
+          args.segments.map((seg) => ({
+            chatId,
+            role: "assistant",
+            content: seg.text,
+            speakerId: seg.kind === "character" ? seg.speakerId : null,
+            kind: seg.kind,
+            turnId: args.turnId,
+          })),
+        )
+        .returning();
+
+      await tx.update(chats).set({ updatedAt: new Date() }).where(eq(chats.id, chatId));
+      return rows;
+    });
+
+  const turnOptions = { action, messages: stored, turnId, prepare, commit };
 
   // Non-streaming providers get the whole reply at once and are parsed after.
   if (!s.streaming && !isHorde) {
-    const raw = (await completeOnce(cfg, built.messages)).trim();
-    const segments = parseSegments(raw, speakers);
-    if (!segments.length) return errorJson(new Error(EMPTY_GROUP_REPLY), 502);
-    const saved = await saveTurn(segments);
-    return Response.json({ ok: true, turnId, messages: saved, segments, stats: built.stats });
+    try {
+      const outcome = await runGroupTurn({
+        ...turnOptions,
+        produce: async (built) =>
+          parseSegments((await completeOnce(cfg, built.messages)).trim(), speakers),
+      });
+      return Response.json({
+        ok: true,
+        turnId: outcome.turnId,
+        messages: outcome.committed,
+        segments: outcome.segments,
+        stats: lastStats,
+      });
+    } catch (e) {
+      if (e instanceof Error && e.message === EMPTY_GROUP_TURN) return errorJson(e, 502);
+      throw e;
+    }
   }
 
   return sseStream(async (send) => {
-    send("meta", { stats: built.stats, model: conn.model, connection: conn.name });
-    const runOpts: RunOptions | undefined = hordeOpts
-      ? { ...hordeOpts, onStatus: (status) => send("horde", status) }
-      : undefined;
-    const parser = createSegmentParser(speakers);
-    for await (const chunk of streamCompletion(cfg, built.messages, runOpts)) {
-      // The full segment list is resent every chunk so the client can simply
-      // replace its state — no delta bookkeeping, no duplicated bubbles.
-      send("segments", { segments: parser.push(chunk) });
-    }
-    const segments = parser.flush();
-    if (!segments.length) throw new Error(EMPTY_GROUP_REPLY);
-    const saved = await saveTurn(segments);
-    send("segments", { segments });
-    send("done", { turnId, messages: saved, mode: "insert" });
+    const outcome = await runGroupTurn({
+      ...turnOptions,
+      produce: async (built) => {
+        send("meta", { stats: built.stats, model: conn.model, connection: conn.name });
+        const runOpts: RunOptions | undefined = isHorde
+          ? {
+              signal: opts.signal,
+              stopSequence: built.stopSequence,
+              timeoutMs: HORDE_TIMEOUT_MS,
+              onStatus: (status) => send("horde", status),
+            }
+          : undefined;
+        const parser = createSegmentParser(speakers);
+        for await (const chunk of streamCompletion(cfg, built.messages, runOpts)) {
+          // The full segment list is resent every chunk so the client can simply
+          // replace its state — no delta bookkeeping, no duplicated bubbles.
+          send("segments", { segments: parser.push(chunk) });
+        }
+        return parser.flush();
+      },
+    });
+
+    send("segments", { segments: outcome.segments });
+    send("done", { turnId: outcome.turnId, messages: outcome.committed, mode: "insert" });
   });
 }
 
