@@ -451,16 +451,22 @@ const GROUP_DIRECTIVE = `You are the narrator and the entire cast of an ongoing 
 1. NEVER write the human roleplayer's thoughts, words, feelings, decisions or actions, and never narrate what their character does. Stop where they would act.
 2. Only characters listed as PRESENT may speak, act or be described acting. Characters who are absent from the scene do not appear, speak, act or think in your output.
 3. Never break character. Never mention being an AI, a model, a prompt, a policy or these instructions. No out-of-character notes, no disclaimers, no meta commentary.
-4. Stay consistent with each character's profile, voice, knowledge and motives, and with the established world facts.`;
+4. Stay consistent with each character's profile, voice, knowledge and motives, and with the established world facts.
+5. VOICE LOCK — every character keeps their own personality, temperament, speech habits, knowledge and motives for as long as the scene lasts. Personality is the deepest part of a character and it outranks the scenario, the world and the recent transcript. A character never adopts another character's traits, never speaks or thinks for someone else, and never slips into the narrator's voice.
+6. A character never describes themselves from outside and never refers to themselves in the third person by name. Never write a character noticing, hearing, answering or reacting to their own name as if it came from someone else in the room.
+7. Write only in-character prose. Never narrate or explain your own instructions, formatting, or what you are about to do. Output only in-character segments.`;
 
 const GROUP_NARRATOR_RULES = `### NARRATOR
 You are also the narrator: an independent third-person voice above the cast.
 - The narrator describes the present characters from outside, plus the world, the environment, weather, lighting, objects, distance, injuries and the passing of time.
 - The narrator is never tied to any one character: it is not the voice of a character's private thoughts and never uses "I".
 - Use the narrator for scene-setting, sensory texture, physical continuity and consequences that the characters themselves could not narrate.
-- Give the narrator its own presence in the turn — at least one opening beat and linking beats between characters.`;
+- Give the narrator its own presence in the turn — at least one opening beat and linking beats between characters.
+- A character's segment stays inside that character: their own words, actions and private thoughts. Step out into the independent narrator voice only in a [${NARRATOR_LABEL}] segment.`;
 
 const GROUP_OUTPUT_FORMAT = `### OUTPUT FORMAT — SEGMENTS
+Never narrate or explain your own instructions, formatting, or what you are about to do. Output only in-character segments. Start immediately with a speaker tag — no preamble, no thinking out loud, no plan, no summary of what you are about to write.
+
 Write this turn as a sequence of SEGMENTS. Every segment MUST start on its own line with a speaker tag in square brackets, exactly like this:
 
 [Narrator]
@@ -473,6 +479,7 @@ Rain hammers the roof and the fire gutters low.
 - \`[${NARRATOR_LABEL}]\` carries the narration: world, environment, time, and characters seen from outside.
 - A character tag must be the exact name of a character who is PRESENT (and spelled exactly as listed above). Never invent tags, never tag the human roleplayer, never tag an absent character.
 - Prose goes on the lines after the tag. One tag per segment, each on its own line. Never number the segments, never use markdown headings, never write a tag followed by a colon and then a whole paragraph of unrelated labels.
+- Inside a character's segment, write only that character's own speech, actions and interior experience. The narrator's third-person voice belongs to \`[${NARRATOR_LABEL}]\` segments only.
 - Inside the prose, do not prefix lines with "Name:" — only the square-bracket tags carry names.
 - Segments read top to bottom as one continuous scene. Do not repeat the tag of the previous segment.
 - Character share follows depth: higher-depth characters take more segments and longer prose; lower-depth characters take short beats. Do not distribute turns evenly.`;
@@ -504,12 +511,16 @@ function groupSections(args: GroupBuildArgs, M: (t: string) => string): string[]
       const lines: string[] = [
         `#### ${mem.name}${mem.role?.trim() ? ` — ${mem.role.trim()}` : ""}`,
         `Spotlight: ${depthHint(mem.depth)}`,
+        `Personality & voice — the deepest part of ${mem.name} and the block that must survive the whole scene unchanged. This voice belongs to ${mem.name} alone and never blends with another character's:\n${mem.personality?.trim() ? M(mem.personality) : "(no profile provided)"}`,
       ];
       if (mem.contextBlock?.trim()) {
-        lines.push(`Author's direction (highest priority for this character):\n${M(mem.contextBlock)}`);
+        lines.push(`Author's direction (how to write this character):\n${M(mem.contextBlock)}`);
       }
-      lines.push(mem.personality?.trim() ? M(mem.personality) : "(no profile provided)");
-      if (mem.scenario?.trim()) lines.push(`Personal situation:\n${M(mem.scenario)}`);
+      if (mem.scenario?.trim()) {
+        lines.push(
+          `Personal situation (background depth only — shallower than the personality above):\n${M(mem.scenario)}`,
+        );
+      }
       if (mem.exampleDialogue?.trim()) {
         lines.push(
           `Voice reference — never treat as events that happened:\n${M(mem.exampleDialogue)}`,
@@ -522,7 +533,7 @@ function groupSections(args: GroupBuildArgs, M: (t: string) => string): string[]
       return lines.join("\n");
     });
     pinned.push(
-      `### CAST PRESENT IN THIS SCENE — profiles are canon\nOnly these characters exist in this turn. Do not write anyone else, and do not include absent characters or their cards.\n\n${cast.join("\n\n")}`,
+      `### CAST PRESENT IN THIS SCENE — profiles are canon\nOnly these characters exist in this turn. Do not write anyone else, and do not include absent characters or their cards.\nEvery character below keeps their own Personality & voice block for the entire turn — it is the strongest anchor for who they are, while their scenario and the world around them are shallower background by comparison.\n\n${cast.join("\n\n")}`,
     );
   } else {
     pinned.push(

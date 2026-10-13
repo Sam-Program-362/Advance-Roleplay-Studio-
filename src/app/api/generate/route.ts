@@ -37,6 +37,7 @@ import {
   NARRATOR_LABEL,
   createSegmentParser,
   parseSegments,
+  stripReasoningBlocks,
   type GroupSegment,
   type SpeakerRef,
 } from "@/lib/groupSegments";
@@ -519,7 +520,12 @@ async function generateGroupTurn(opts: {
 
 /** Strip leaked role labels / OOC artefacts that break immersion. */
 function cleanup(text: string, charName: string, userName: string): string {
-  let t = text.replace(/^\s+/, "");
+  // Private reasoning (<think>…</think> and friends) is never part of the reply:
+  // it is removed first so nothing downstream can save or display it.
+  let t = stripReasoningBlocks(text, (dropped) => {
+    const body = dropped.replace(/\s+/g, " ").trim().slice(0, 300);
+    if (body) console.warn(`[chat] dropped reasoning text: ${body}`);
+  }).replace(/^\s+/, "");
   for (const n of [charName, userName]) {
     if (!n) continue;
     const re = new RegExp(`^${escapeRe(n)}\\s*:\\s*`, "i");

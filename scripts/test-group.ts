@@ -93,11 +93,17 @@ section("segment parser — markers");
 }
 
 {
+  // A model that thinks out loud first must not have that text become a
+  // segment: it is discarded, never attached to the Narrator.
   const segs = parseSegments("Some framing prose.\n[Narrator]\nThen the rain.", CAST);
-  eq("text before the first tag is narration", shape(segs), [
-    ["narration", null, NARRATOR_LABEL, "Some framing prose."],
+  eq("prose before the first marker is discarded, not narrated", shape(segs), [
     ["narration", null, NARRATOR_LABEL, "Then the rain."],
   ]);
+  check(
+    "the discarded preamble reaches no segment",
+    !segs.some((s) => s.text.includes("Some framing prose")),
+    shape(segs),
+  );
 }
 
 section("segment parser — unknown names");
@@ -114,10 +120,10 @@ section("segment parser — unknown names");
 }
 
 {
+  // No valid marker has started the turn yet, so there is nothing the unknown
+  // tag's text may legitimately attach to — it is discarded with the preamble.
   const segs = parseSegments("[Ghost]\nPrologue only.", CAST);
-  eq("an unknown tag before anyone speaks stays narration", shape(segs), [
-    ["narration", null, NARRATOR_LABEL, "Prologue only."],
-  ]);
+  eq("an unknown name before the first real marker leaks nothing", segs.length, 0);
 }
 
 {
@@ -197,6 +203,144 @@ section("segment parser — streaming");
   eq("the withheld text lands on the previous speaker", shape(final), [
     ["character", 11, "Kael", "*He starts to answer*\n\n*Nothing.*"],
   ]);
+}
+
+section("segment parser — model reasoning is never saved");
+
+{
+  const raw = [
+    "<think>",
+    "We need to plan this turn. The user is at the door, so [Kael] should react first.",
+    "</think>",
+    "[Narrator]",
+    "Rain hammers the roof.",
+    "[Kael]",
+    "*He shrugs.*",
+  ].join("\n");
+  const segs = parseSegments(raw, CAST);
+  eq("a <think> block is stripped before segment parsing starts", shape(segs), [
+    ["narration", null, NARRATOR_LABEL, "Rain hammers the roof."],
+    ["character", 11, "Kael", "*He shrugs.*"],
+  ]);
+  check(
+    "no reasoning text survives into a segment",
+    !segs.some((s) => /plan this turn|at the door/i.test(s.text)),
+    shape(segs),
+  );
+}
+
+{
+  const raw = "<thinking>Let me think about [Mira Thorn].</thinking>[Narrator]\nThe hall is cold.";
+  const segs = parseSegments(raw, CAST);
+  eq("other reasoning tags are stripped too", shape(segs), [
+    ["narration", null, NARRATOR_LABEL, "The hall is cold."],
+  ]);
+}
+
+{
+  eq("an unclosed reasoning block is dropped", parseSegments("<think>unclosed reasoning about [Kael]", CAST).length, 0);
+}
+
+{
+  // A bracketed name inside prose wrapped in <analysis> must not start a turn.
+  const raw = [
+    "<analysis>",
+    "We need to write segments: [Kael] speaks, then [Mira Thorn] answers.",
+    "</analysis>",
+    "[Narrator]",
+    "A beat passes.",
+  ].join("\n");
+  eq("a bracketed name inside a reasoning block is not a speaker", shape(parseSegments(raw, CAST)), [
+    ["narration", null, NARRATOR_LABEL, "A beat passes."],
+  ]);
+}
+
+{
+  const text =
+    "<think>We must plan: [Narrator] first.</think>\n[Narrator]\nRain.\n[Kael]\n*He shrugs.*";
+  const parser = createSegmentParser(CAST);
+  for (const ch of text) parser.push(ch);
+  eq(
+    "char-by-char streaming strips reasoning exactly like a single parse",
+    shape(parser.flush()),
+    shape(parseSegments(text, CAST)),
+  );
+}
+
+section("segment parser — leaked reasoning and meta-commentary");
+
+{
+  // Raw shape seen from models that narrate their plan before the first marker.
+  const raw = [
+    "Let me think about this turn. I need to give [Narrator] a beat, then have [Kael] answer.",
+    "",
+    "[Narrator]",
+    "Rain hammers the roof.",
+    "[Kael]",
+    "*He shrugs.*",
+  ].join("\n");
+  const segs = parseSegments(raw, CAST);
+  eq("reasoning prose before the first marker produces no segment", shape(segs), [
+    ["narration", null, NARRATOR_LABEL, "Rain hammers the roof."],
+    ["character", 11, "Kael", "*He shrugs.*"],
+  ]);
+  check(
+    "the preamble is attached to nobody",
+    !segs.some((s) => /let me think|i need to give/i.test(s.text)),
+    shape(segs),
+  );
+}
+
+{
+  // The meta line itself is parsed as Kael's segment and must be dropped.
+  const raw = ["[Kael]", "We need to write this as segments: [Kael] reacts first, then [Mira Thorn] answers."].join("\n");
+  eq("meta-commentary holding a bracketed name is dropped", parseSegments(raw, CAST).length, 0);
+}
+
+{
+  const raw = [
+    "[Narrator]",
+    "The room is quiet.",
+    "[Mira Thorn]",
+    "We must create segments: [Mira Thorn] steps forward, then [Kael] replies.",
+  ].join("\n");
+  eq("only the meta segment is dropped, real ones stay", shape(parseSegments(raw, CAST)), [
+    ["narration", null, NARRATOR_LABEL, "The room is quiet."],
+  ]);
+}
+
+{
+  // In-character dialogue the words are fine in.
+  const quoted = parseSegments('[Kael]\n"We need to leave. Now."\n*He starts for the door.*', CAST);
+  check(
+    "quoted in-character dialogue is not mistaken for meta-commentary",
+    quoted.length === 1 && quoted[0].text.includes("We need to leave"),
+    shape(quoted),
+  );
+
+  const soft = parseSegments("[Kael]\nLet me help you with that.\n*He steps in.*", CAST);
+  check(
+    "a weak opener without any format talk stays in character",
+    soft.length === 1 && soft[0].text.startsWith("Let me help you"),
+    shape(soft),
+  );
+
+  const strong = parseSegments("[Kael]\nOkay, let me narrate the segments now.", CAST);
+  eq("a weak opener plus format talk is still dropped", strong.length, 0);
+}
+
+{
+  const raw = [
+    "We need to plan the segments first.",
+    "[Narrator]",
+    "The room is quiet.",
+  ].join("\n");
+  const parser = createSegmentParser(CAST);
+  const head = "We need to plan the segm";
+  const early = parser.push(head);
+  check("nothing is streamed before the first marker", early.length === 0, early);
+  parser.push(raw.slice(head.length));
+  eq("the full streamed turn matches a single parse", shape(parser.flush()), shape(parseSegments(raw, CAST)));
 }
 
 section("segment parser — housekeeping");
@@ -354,6 +498,45 @@ section("buildGroupPrompt — absent characters are excluded");
     check(`${label}: absent name is not sent`, !body.includes(ABSENT_NAME));
     check(`${label}: absent profile text is not sent`, !body.includes("ABSENT_"));
     check(`${label}: absent Memory Card is not sent`, !body.includes(ABSENT_CARD));
+  }
+}
+
+section("group prompt — voices stay separate, output stays in character");
+
+{
+  const chat = flatten(makeArgs());
+  const horde = flatten(makeArgs(), true);
+
+  for (const [label, body] of [
+    ["chat prompt", chat],
+    ["horde prompt", horde],
+  ] as const) {
+    check(
+      `${label}: tells the model never to narrate its own instructions`,
+      body.includes(
+        "Never narrate or explain your own instructions, formatting, or what you are about to do. Output only in-character segments.",
+      ),
+    );
+    check(
+      `${label}: locks each character to their own voice`,
+      /VOICE LOCK/.test(body) && /never adopts another character's traits/.test(body),
+    );
+    check(
+      `${label}: forbids a character referring to themselves by name`,
+      /never refers to themselves in the third person by name/i.test(body),
+    );
+    check(
+      `${label}: personality is marked as the deepest part of a character`,
+      /deepest part of Kael/i.test(body),
+    );
+    check(
+      `${label}: the personal situation is shallower than the personality`,
+      /shallower than the personality above/i.test(body),
+    );
+    check(
+      `${label}: the personality block survives the pinned-section order`,
+      body.indexOf("KAEL_PERSONALITY_TEXT") < body.indexOf("KAEL_SCENARIO_TEXT"),
+    );
   }
 }
 
